@@ -9,19 +9,20 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
 import bcrypt
-import requests
 import base64
-from google import genai
-from google.genai import types
 
 # Importez vos modèles depuis votre fichier models.py
 from models import Base, Utilisateur, NoteDeFrais, Justificatif, StatutEnum
 
-# Configuration SDK Gemini (assurez-vous d'avoir défini votre variable d'environnement GEMINI_API_KEY)
+# Configuration SDK Gemini officiel
 from google import genai
 from google.genai import types
 
-client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+api_key = os.environ.get("GEMINI_API_KEY")
+client = genai.Client(api_key=api_key) if api_key else None
+
+if not api_key:
+    print("⚠️ Attention : Aucune clé GEMINI_API_KEY détectée. L'analyse automatique par IA est désactivée.")
 
 # ==========================================
 # 1. CONNEXION MYSQL
@@ -42,7 +43,6 @@ def get_db() -> Generator[Session, None, None]:
 def get_current_user_from_token(authorization: str = Header(None), db: Session = Depends(get_db)):
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Token manquant ou invalide")
-    # Pour ce test, on récupère le premier utilisateur (ou adaptez selon votre logique JWT)
     user = db.query(Utilisateur).first() 
     if not user:
         raise HTTPException(status_code=404, detail="Utilisateur introuvable")
@@ -63,6 +63,25 @@ app.add_middleware(
 
 os.makedirs("statiques", exist_ok=True)
 app.mount("/statiques", StaticFiles(directory="statiques"), name="statiques")
+
+
+# Fonction utilitaire pour nettoyer les montants (gère les virgules européennes ex: "45,90" -> 45.90)
+def clean_float(value) -> float:
+    if value is None:
+        return 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            # Remplace la virgule par un point et nettoie les espaces
+            cleaned = value.replace(",", ".").strip()
+            # Supprime d'éventuels symboles monétaires (€, $, etc.)
+            for char in ["€", "$", "EUR", " "]:
+                cleaned = cleaned.replace(char, "")
+            return float(cleaned)
+        except ValueError:
+            return 0.0
+    return 0.0
 
 
 # ==========================================
@@ -122,6 +141,40 @@ async def get_notes_en_attente(db: Session = Depends(get_db)):
     except Exception as e:
         print(f"🔥 Erreur récupération notes : {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/notes/mes-notes")
+async def get_mes_notes(
+    db: Session = Depends(get_db),
+    current_user: Utilisateur = Depends(get_current_user_from_token)
+):
+    """
+    Route dédiée au suivi employé : récupère toutes les notes de frais 
+    soumises par l'utilisateur connecté avec leur statut (en attente, validée, rejetée).
+    """
+    try:
+        notes = db.query(NoteDeFrais).filter(NoteDeFrais.utilisateur_id == current_user.id).all()
+        
+        result = []
+        for note in notes:
+            justificatif_url = note.justificatif.url_fichier if note.justificatif else None
+            
+            result.append({
+                "id": note.id,
+                "titre": note.titre,
+                "montant_ttc": float(note.montant_ttc),
+                "montant_tva": float(note.montant_tva),
+                "devise": note.devise,
+                "date_depense": str(note.date_depense),
+                "statut": note.statut.value if hasattr(note.statut, "value") else note.statut,
+                "justificatif_url": justificatif_url
+            })
+        return result
+    except Exception as e:
+        print(f"🔥 Erreur récupération mes notes : {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/notes/upload-justificatif")
 async def upload_justificatif(
     file: UploadFile = File(...),
@@ -144,73 +197,61 @@ async def upload_justificatif(
         date_depense_str = ""
         titre = f"Note - {file.filename}"
 
-        try:
-            mime_type = "application/pdf" if file_extension == ".pdf" else "image/jpeg"
-            if file_extension == ".png":
-                mime_type = "image/png"
+        if client:
+            try:
+                mime_type = "application/pdf" if file_extension == ".pdf" else "image/jpeg"
+                if file_extension == ".png":
+                    mime_type = "image/png"
 
-            file_base64 = base64.b64encode(contents).decode('utf-8')
-            api_key = os.environ.get("GEMINI_API_KEY")
+                # Appel au modèle via le SDK officiel google-genai
+                response = client.models.generate_content(
+                    model='gemini-3.6-flash',
+                    contents=[
+                        types.Part.from_bytes(
+                            data=contents,
+                            mime_type=mime_type,
+                        ),
+                        (
+                            "Tu es un expert comptable. Analyse ce document (facture, ticket de caisse ou billet de train type OUIGO).\n"
+                            "Extrais les informations suivantes sous un format JSON strict :\n\n"
+                            "- \"montant_ttc\" : Le montant TOTAL payé (cherche les mots clés 'TOTAL', 'TTC', 'NET A PAYER' ou 'Total voyageur'). Si absent, mets 0.0.\n"
+                            "- \"montant_tva\" : Le montant total de la TVA. Si la TVA n'est pas explicitement écrite, mets 0.0.\n"
+                            "- \"date_depense\" : La date de la dépense ou du voyage au format AAAA-MM-JJ (ex: 2026-05-03). Si introuvable, chaîne vide.\n"
+                            "- \"titre\" : Le nom du marchand ou un court résumé du trajet/dépense (ex: 'OUIGO - Paris / Marseille', 'Restaurant Le Bouchon').\n\n"
+                            "Réponds UNIQUEMENT avec un objet JSON valide, sans texte additionnel et sans blocs de code markdown."
+                        ),
+                    ],
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json"
+                    )
+                )
 
-            # URL de l'API REST standard de Gemini
-            url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
-            
-            payload = {
-                "contents": [
-                    {
-                        "parts": [
-                            {
-                                "text": (
-                                    "Analyse ce justificatif de note de frais (ticket, facture ou reçu).\n"
-                                    "Extrais les informations suivantes sous un format JSON strict :\n"
-                                    '- "montant_ttc" (un nombre float, ex: 45.90, ou 0.0 si introuvable)\n'
-                                    '- "montant_tva" (un nombre float, ex: 5.50, ou 0.0 si introuvable)\n'
-                                    '- "date_depense" (au format AAAA-MM-JJ, ou chaîne vide si introuvable)\n'
-                                    '- "titre" (un court résumé ou nom du marchand, ex: "Restaurant Le Petit Bouchon")\n'
-                                    "Réponds UNIQUEMENT avec le JSON brut, sans balises markdown."
-                                )
-                            },
-                            {
-                                "inline_data": {
-                                    "mime_type": mime_type,
-                                    "data": file_base64
-                                }
-                            }
-                        ]
-                    }
-                ]
-            }
-
-            # Passage du jeton AQ. dans le header Authorization Bearer
-            headers = {
-                'Content-Type': 'application/json',
-                'Authorization': f'Bearer {api_key}'
-            }
-            
-            resp = requests.post(url, json=payload, headers=headers)
-
-            if resp.status_code == 200:
-                resp_data = resp.json()
-                response_text = resp_data['candidates'][0]['content']['parts'][0]['text'].strip()
+                response_text = response.text.strip()
                 
+                # Nettoyage de sécurité si le modèle ajoute quand même des balises
                 if response_text.startswith("```json"):
                     response_text = response_text[7:-3].strip()
                 elif response_text.startswith("```"):
                     response_text = response_text[3:-3].strip()
 
+                print(f"🤖 Réponse brute de l'IA : {response_text}")
+
                 extracted_data = json.loads(response_text)
-                montant_ttc = float(extracted_data.get("montant_ttc", 0.0))
-                montant_tva = float(extracted_data.get("montant_tva", 0.0))
+                
+                # Utilisation de clean_float pour éviter les erreurs de format (virgules, chaînes)
+                montant_ttc = clean_float(extracted_data.get("montant_ttc", 0.0))
+                montant_tva = clean_float(extracted_data.get("montant_tva", 0.0))
                 date_depense_str = extracted_data.get("date_depense", "")
+                
                 if extracted_data.get("titre"):
                     titre = extracted_data.get("titre")
-            else:
-                print(f"⚠️ Erreur HTTP Gemini : {resp.status_code} - {resp.text}")
 
-        except Exception as ai_error:
-            import traceback
-            print(f"⚠️ Erreur lors de l'analyse IA : {ai_error}")
-            traceback.print_exc()
+            except Exception as ai_error:
+                import traceback
+                print(f"⚠️ Erreur lors de l'analyse IA : {ai_error}")
+                traceback.print_exc()
+        else:
+            print("ℹ️ Analyse IA ignorée (aucune clé API configurée).")
 
         try:
             date_depense = datetime.strptime(date_depense_str, "%Y-%m-%d").date() if date_depense_str else datetime.now().date()
