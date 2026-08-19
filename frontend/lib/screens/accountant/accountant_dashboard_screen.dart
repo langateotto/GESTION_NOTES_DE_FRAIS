@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
-import 'package:url_launcher/url_launcher.dart'; // Optionnel pour ouvrir le PDF dans le navigateur
+import 'package:url_launcher/url_launcher.dart';
 import '../../services/api_service.dart';
+import '../EmployeeTrackingScreen.dart';
 import '../login_screen.dart';
+
 
 class AccountantDashboardScreen extends StatefulWidget {
   final ApiService? apiService;
@@ -58,7 +60,7 @@ class _AccountantDashboardScreenState extends State<AccountantDashboardScreen> {
 
   void _validateExpense(int id, bool approved, {String? motif}) async {
     String statut = approved ? 'valide' : 'rejete';
-    bool success = await _apiService.updateExpenseStatus(id, statut, motifRejet: motif);
+    bool success = await _apiService.updateNoteStatus(id, statut, motifRejet: motif);
 
     if (success) {
       setState(() {
@@ -82,18 +84,15 @@ class _AccountantDashboardScreenState extends State<AccountantDashboardScreen> {
     final TextEditingController motifController = TextEditingController();
     
     final String? rawPath = expense['url_fichier'] ?? 
-                            expense['justificatif_url'] ?? 
-                            expense['imageUrl'] ?? 
-                            expense['chemin_fichier'] ?? 
-                            expense['file'];
+                          expense['justificatif_url'] ?? 
+                          expense['imageUrl'] ?? 
+                          expense['chemin_fichier'] ?? 
+                          expense['file'];
     
     final String fullFileUrl = rawPath != null && rawPath.startsWith('http')
         ? rawPath
         : "${_apiService.baseUrl.replaceAll(RegExp(r'/$'), '')}/${rawPath?.replaceFirst(RegExp(r'^/'), '') ?? ''}";
 
-    print("URL complète du justificatif : $fullFileUrl");
-
-    // Vérifier si le fichier est un PDF
     final bool isPdf = rawPath != null && rawPath.toLowerCase().endsWith('.pdf');
 
     showDialog(
@@ -106,7 +105,6 @@ class _AccountantDashboardScreenState extends State<AccountantDashboardScreen> {
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // Zone d'affichage du justificatif (Image avec zoom OU PDF cliquable)
               Expanded(
                 flex: 1,
                 child: Container(
@@ -162,7 +160,6 @@ class _AccountantDashboardScreenState extends State<AccountantDashboardScreen> {
                 ),
               ),
               const SizedBox(width: 20),
-              // Zone des détails et actions de validation
               Expanded(
                 flex: 1,
                 child: Column(
@@ -268,9 +265,16 @@ class _AccountantDashboardScreenState extends State<AccountantDashboardScreen> {
                     onTap: () {},
                   ),
                   ListTile(
-                    leading: const Icon(Icons.history, color: Colors.white70),
-                    title: const Text("Historique & Exports", style: TextStyle(color: Colors.white70)),
-                    onTap: () {},
+                    leading: const Icon(Icons.people, color: Colors.white70),
+                    title: const Text("Suivi des Employés", style: TextStyle(color: Colors.white70)),
+                    onTap: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) => EmployeeTrackingScreen(apiService: _apiService),
+                        ),
+                      );
+                    },
                   ),
                 ],
               ),

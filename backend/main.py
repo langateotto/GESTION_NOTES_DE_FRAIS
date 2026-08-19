@@ -2,14 +2,13 @@ import os
 import uuid
 import json
 from datetime import datetime
-from typing import Generator
-from fastapi import FastAPI, Depends, HTTPException, Form, UploadFile, File, Header
+from typing import Generator, Optional
+from fastapi import FastAPI, Depends, HTTPException, Form, UploadFile, File, Header, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
 import bcrypt
-import base64
 
 # Importez vos modèles depuis votre fichier models.py
 from models import Base, Utilisateur, NoteDeFrais, Justificatif, StatutEnum
@@ -18,11 +17,15 @@ from models import Base, Utilisateur, NoteDeFrais, Justificatif, StatutEnum
 from google import genai
 from google.genai import types
 
-api_key = os.environ.get("GEMINI_API_KEY")
+# Clé API configurée directement ou via l'environnement
+API_KEY = os.environ.get("GCP_API_KEY")
+
 client = genai.Client(api_key=api_key) if api_key else None
 
 if not api_key:
     print("⚠️ Attention : Aucune clé GEMINI_API_KEY détectée. L'analyse automatique par IA est désactivée.")
+else:
+    print("✅ Clé GEMINI_API_KEY chargée avec succès.")
 
 # ==========================================
 # 1. CONNEXION MYSQL
@@ -65,7 +68,7 @@ os.makedirs("statiques", exist_ok=True)
 app.mount("/statiques", StaticFiles(directory="statiques"), name="statiques")
 
 
-# Fonction utilitaire pour nettoyer les montants (gère les virgules européennes ex: "45,90" -> 45.90)
+# Fonction utilitaire pour nettoyer les montants
 def clean_float(value) -> float:
     if value is None:
         return 0.0
@@ -73,9 +76,7 @@ def clean_float(value) -> float:
         return float(value)
     if isinstance(value, str):
         try:
-            # Remplace la virgule par un point et nettoie les espaces
             cleaned = value.replace(",", ".").strip()
-            # Supprime d'éventuels symboles monétaires (€, $, etc.)
             for char in ["€", "$", "EUR", " "]:
                 cleaned = cleaned.replace(char, "")
             return float(cleaned)
@@ -125,6 +126,7 @@ async def get_notes_en_attente(db: Session = Depends(get_db)):
         result = []
         for note in notes:
             justificatif_url = note.justificatif.url_fichier if note.justificatif else None
+            employe_nom = f"{note.utilisateur.prenom} {note.utilisateur.nom}" if hasattr(note, 'utilisateur') and note.utilisateur else "Employé"
             
             result.append({
                 "id": note.id,
@@ -135,6 +137,7 @@ async def get_notes_en_attente(db: Session = Depends(get_db)):
                 "date_depense": str(note.date_depense),
                 "statut": note.statut.value if hasattr(note.statut, "value") else note.statut,
                 "justificatif_url": justificatif_url,
+                "employe_nom": employe_nom,
                 "user_id": note.utilisateur_id
             })
         return result
@@ -143,15 +146,68 @@ async def get_notes_en_attente(db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/notes/all")
+async def get_all_expenses(
+    statut: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    try:
+        query = db.query(NoteDeFrais)
+        if statut:
+            query = query.filter(NoteDeFrais.statut == statut)
+            
+        notes = query.all()
+        
+        result = []
+        for note in notes:
+            justificatif_url = note.justificatif.url_fichier if note.justificatif else None
+            employe_nom = f"{note.utilisateur.prenom} {note.utilisateur.nom}" if hasattr(note, 'utilisateur') and note.utilisateur else "Employé"
+            
+            result.append({
+                "id": note.id,
+                "titre": note.titre,
+                "montant_ttc": float(note.montant_ttc),
+                "montant_tva": float(note.montant_tva),
+                "devise": note.devise,
+                "date_depense": str(note.date_depense),
+                "statut": note.statut.value if hasattr(note.statut, "value") else note.statut,
+                "justificatif_url": justificatif_url,
+                "employe_nom": employe_nom,
+                "user_id": note.utilisateur_id
+            })
+        return result
+    except Exception as e:
+        print(f"🔥 Erreur récupération de toutes les notes : {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.patch("/notes/{note_id}/statut")
+async def update_note_status(
+    note_id: int,
+    statut: str = Form(...),
+    motif_rejet: Optional[str] = Form(None),
+    db: Session = Depends(get_db)
+):
+    try:
+        note = db.query(NoteDeFrais).filter(NoteDeFrais.id == note_id).first()
+        if not note:
+            raise HTTPException(status_code=404, detail="Note de frais introuvable")
+            
+        note.statut = statut
+        db.commit()
+        return {"message": "Statut mis à jour avec succès", "id": note.id, "nouveau_statut": note.statut}
+    except Exception as e:
+        db.rollback()
+        print(f"🔥 Erreur mise à jour statut : {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/notes/mes-notes")
+@app.get("/notes/my-notes")
 async def get_mes_notes(
     db: Session = Depends(get_db),
     current_user: Utilisateur = Depends(get_current_user_from_token)
 ):
-    """
-    Route dédiée au suivi employé : récupère toutes les notes de frais 
-    soumises par l'utilisateur connecté avec leur statut (en attente, validée, rejetée).
-    """
     try:
         notes = db.query(NoteDeFrais).filter(NoteDeFrais.utilisateur_id == current_user.id).all()
         
@@ -203,9 +259,8 @@ async def upload_justificatif(
                 if file_extension == ".png":
                     mime_type = "image/png"
 
-                # Appel au modèle via le SDK officiel google-genai
                 response = client.models.generate_content(
-                    model='gemini-3.6-flash',
+                    model='gemini-3.6-flash', 
                     contents=[
                         types.Part.from_bytes(
                             data=contents,
@@ -228,7 +283,6 @@ async def upload_justificatif(
 
                 response_text = response.text.strip()
                 
-                # Nettoyage de sécurité si le modèle ajoute quand même des balises
                 if response_text.startswith("```json"):
                     response_text = response_text[7:-3].strip()
                 elif response_text.startswith("```"):
@@ -238,7 +292,6 @@ async def upload_justificatif(
 
                 extracted_data = json.loads(response_text)
                 
-                # Utilisation de clean_float pour éviter les erreurs de format (virgules, chaînes)
                 montant_ttc = clean_float(extracted_data.get("montant_ttc", 0.0))
                 montant_tva = clean_float(extracted_data.get("montant_tva", 0.0))
                 date_depense_str = extracted_data.get("date_depense", "")
@@ -293,4 +346,51 @@ async def upload_justificatif(
 
     except Exception as e:
         print(f"🔥 Erreur serveur upload : {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/notes/")
+async def create_note(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: Utilisateur = Depends(get_current_user_from_token)
+):
+    """
+    Route de secours universelle (gère formulaire ou JSON) pour éviter les erreurs 422 
+    si Flutter tente d'envoyer des données directement ici.
+    """
+    try:
+        content_type = request.headers.get("content-type", "")
+        if "application/json" in content_type:
+            data = await request.json()
+            titre = data.get("titre", "Note manuelle")
+            montant_ttc = clean_float(data.get("montant_ttc", 0.0))
+            date_str = data.get("date_depense", str(datetime.now().date()))
+        else:
+            form = await request.form()
+            titre = form.get("titre", "Note manuelle")
+            montant_ttc = clean_float(form.get("montant_ttc", 0.0))
+            date_str = form.get("date_depense", str(datetime.now().date()))
+
+        try:
+            date_depense = datetime.strptime(date_str, "%Y-%m-%d").date()
+        except ValueError:
+            date_depense = datetime.now().date()
+
+        nouvelle_note = NoteDeFrais(
+            titre=titre,
+            montant_ttc=montant_ttc,
+            montant_tva=0.0,
+            devise="EUR",
+            date_depense=date_depense,
+            statut=StatutEnum.en_attente,
+            utilisateur_id=current_user.id
+        )
+        db.add(nouvelle_note)
+        db.commit()
+        db.refresh(nouvelle_note)
+
+        return {"message": "Note créée avec succès", "id": nouvelle_note.id}
+    except Exception as e:
+        db.rollback()
         raise HTTPException(status_code=500, detail=str(e))

@@ -122,6 +122,59 @@ class ApiService {
     }
   }
 
+  // ==================== AJOUTÉ : Création définitive de la note de frais ====================
+  Future<bool> createExpense({
+    required String titre,
+    required double montantTtc,
+    required double montantTva,
+    required String dateDepense,
+    String? justificatifUrl,
+  }) async {
+    try {
+      final token = await AuthService.getToken();
+      final response = await http.post(
+        Uri.parse('$baseUrl/notes/'), // Adaptez l'endpoint si besoin selon votre FastAPI (ex: /notes ou /notes/create)
+        headers: {
+          'Content-Type': 'application/json',
+          if (token != null) 'Authorization': 'Bearer $token',
+        },
+        body: jsonEncode({
+          'titre': titre,
+          'montant_ttc': montantTtc,
+          'montant_tva': montantTva,
+          'date_depense': dateDepense,
+          'justificatif_url': justificatifUrl,
+        }),
+      );
+
+      return response.statusCode == 200 || response.statusCode == 201;
+    } catch (e) {
+      print("Erreur createExpense: $e");
+      return false;
+    }
+  }
+
+  // ==================== AJOUTÉ : Récupérer ses propres notes (Suivi employé) ====================
+  Future<List<dynamic>?> getMyExpenses() async {
+    try {
+      final token = await AuthService.getToken();
+      final response = await http.get(
+        Uri.parse('$baseUrl/notes/my-notes'), // Adaptez l'endpoint selon votre route backend
+        headers: {
+          'Content-Type': 'application/json',
+          if (token != null) 'Authorization': 'Bearer $token',
+        },
+      );
+
+      if (response.statusCode == 200) {
+        return jsonDecode(response.body) as List<dynamic>;
+      }
+    } catch (e) {
+      debugPrint("Erreur lors de la récupération de mes notes : $e");
+    }
+    return null;
+  }
+
   Future<List<dynamic>?> getPendingExpenses() async {
     try {
       final token = await AuthService.getToken();
@@ -143,25 +196,46 @@ class ApiService {
     return null;
   }
 
-  Future<bool> updateExpenseStatus(int noteId, String statut, {String? motifRejet}) async {
+  Future<bool> updateNoteStatus(int noteId, String statut, {String? motifRejet}) async {
     try {
       final token = await AuthService.getToken();
-      final response = await http.put(
-        Uri.parse('$baseUrl/notes/$noteId/statut'),
-        headers: {
-          'Content-Type': 'application/json',
-          if (token != null) 'Authorization': 'Bearer $token',
-        },
-        body: jsonEncode({
-          'statut': statut,
-          'motif_rejet': motifRejet,
-        }),
-      );
+      
+      var request = http.MultipartRequest('PATCH', Uri.parse('$baseUrl/notes/$noteId/statut'));
+      request.fields['statut'] = statut;
+      if (motifRejet != null && motifRejet.isNotEmpty) {
+        request.fields['motif_rejet'] = motifRejet;
+      }
+      if (token != null) {
+        request.headers['Authorization'] = 'Bearer $token';
+      }
 
-      return response.statusCode == 200;
+      var streamedResponse = await request.send();
+      return streamedResponse.statusCode == 200;
     } catch (e) {
       debugPrint("Erreur lors de la mise à jour du statut : $e");
       return false;
+    }
+  }
+
+  Future<List<dynamic>?> getAllExpenses({String? statut}) async {
+    String url = '$baseUrl/notes/all';
+    if (statut != null) {
+      url += '?statut=$statut';
+    }
+
+    final token = await AuthService.getToken();
+    final response = await http.get(
+      Uri.parse(url),
+      headers: {
+        'Content-Type': 'application/json',
+        if (token != null) 'Authorization': 'Bearer $token',
+      },
+    );
+
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body) as List<dynamic>;
+    } else {
+      throw Exception("Erreur lors de la récupération des notes de frais");
     }
   }
 }
