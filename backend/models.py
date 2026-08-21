@@ -1,5 +1,6 @@
 import enum
-from sqlalchemy import Column, Integer, String, ForeignKey, Numeric, Date, Enum, TEXT
+from datetime import datetime
+from sqlalchemy import Column, Integer, String, ForeignKey, Numeric, Date, DateTime, Enum, TEXT
 from sqlalchemy.orm import relationship
 from database import Base
 
@@ -51,17 +52,25 @@ class Mission(Base):
     notes_de_frais = relationship("NoteDeFrais", back_populates="mission")
 
 
+class StatutEnum(enum.Enum):
+    en_attente = "en_attente"
+    valide = "valide"
+    rejete = "rejete"
+    annule = "annule"  # Ajout du statut d'annulation par l'employé
+
 class NoteDeFrais(Base):
     __tablename__ = "notes_de_frais"
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    titre = Column(String(150), nullable=False)  # Ex: "Hôtel nuit 1"
+    titre = Column(String(150), nullable=False)
     montant_ttc = Column(Numeric(10, 2), nullable=False)
     montant_tva = Column(Numeric(10, 2), nullable=False)
     devise = Column(String(10), default="EUR", nullable=False)
     date_depense = Column(Date, nullable=False)
     statut = Column(Enum(StatutEnum), default=StatutEnum.en_attente, nullable=False)
-    motif_rejet = Column(TEXT, nullable=True)  # Rempli seulement si statut = 'rejete'
+    motif_rejet = Column(TEXT, nullable=True)
+    
+    date_soumission = Column(DateTime, default=datetime.now, nullable=False)
     
     utilisateur_id = Column(Integer, ForeignKey("utilisateurs.id", ondelete="CASCADE"), nullable=False)
     mission_id = Column(Integer, ForeignKey("missions.id", ondelete="SET NULL"), nullable=True)
@@ -69,15 +78,19 @@ class NoteDeFrais(Base):
     # Relations
     employe = relationship("Utilisateur", back_populates="notes_de_frais")
     mission = relationship("Mission", back_populates="notes_de_frais")
-    justificatif = relationship("Justificatif", back_populates="note_de_frais", uselist=False) # uselist=False car 1 seule facture par note
-
+    justificatifs = relationship(
+        "Justificatif", 
+        back_populates="note_de_frais", 
+        cascade="all, delete-orphan", 
+        passive_deletes=True
+    )
 
 class Justificatif(Base):
     __tablename__ = "justificatifs"
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    url_fichier = Column(String(255), nullable=False)  # Lien vers le stockage Cloud (S3, Firebase...)
+    url_fichier = Column(String(255), nullable=False)
     note_de_frais_id = Column(Integer, ForeignKey("notes_de_frais.id", ondelete="CASCADE"), nullable=False)
 
-    # Relations
-    note_de_frais = relationship("NoteDeFrais", back_populates="justificatif")
+    # CORRECTION ICI : utilisez "justificatifs" (au pluriel) pour correspondre à NoteDeFrais
+    note_de_frais = relationship("NoteDeFrais", back_populates="justificatifs")

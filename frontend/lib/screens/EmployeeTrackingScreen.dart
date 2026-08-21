@@ -57,6 +57,53 @@ class _EmployeeTrackingScreenState extends State<EmployeeTrackingScreen> {
     }
   }
 
+  // Suppression définitive (Hard Delete) par le comptable
+  Future<void> _deleteExpense(int noteId) async {
+    bool confirm = await showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("Suppression définitive"),
+        content: const Text("Voulez-vous vraiment supprimer définitivement cette note de la base de données ? Cette action est irréversible."),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text("Annuler"),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text("Supprimer", style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    ) ?? false;
+
+    if (confirm) {
+      try {
+        bool success = await widget.apiService.deleteExpense(noteId);
+        if (success) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text("🗑️ Note supprimée définitivement")),
+            );
+          }
+          _loadAllExpenses();
+        } else {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text("❌ Erreur lors de la suppression")),
+            );
+          }
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text("❌ Erreur : $e")),
+          );
+        }
+      }
+    }
+  }
+
   // Cherche explicitement 'nom_user' (basé sur votre table SQL)
   String _getEmployeeName(Map<String, dynamic> expense) {
     if (expense['nom_user'] != null) return expense['nom_user'].toString();
@@ -73,7 +120,7 @@ class _EmployeeTrackingScreenState extends State<EmployeeTrackingScreen> {
     return 'Employé #${expense['utilisateur_id'] ?? ''}';
   }
 
-  void _showActionDialog(Map<String, dynamic> expense) {
+  void _showActionDialog(Map<String, dynamic> expense, String currentStatus) {
     final noteId = expense['id'];
     final titre = expense['titre'] ?? expense['description'] ?? 'Frais';
     final employe = _getEmployeeName(expense);
@@ -89,44 +136,65 @@ class _EmployeeTrackingScreenState extends State<EmployeeTrackingScreen> {
           children: [
             Text("Employé : $employe"),
             Text("Montant : ${expense['montant_ttc']} €"),
+            Text("Statut actuel : ${currentStatus.toUpperCase()}", style: const TextStyle(fontWeight: FontWeight.bold)),
             const SizedBox(height: 16),
-            TextField(
-              controller: motifController,
-              decoration: const InputDecoration(
-                labelText: "Motif (obligatoire en cas de rejet)",
-                border: OutlineInputBorder(),
+            if (currentStatus != 'annule') ...[
+              TextField(
+                controller: motifController,
+                decoration: const InputDecoration(
+                  labelText: "Motif (obligatoire en cas de rejet)",
+                  border: OutlineInputBorder(),
+                ),
               ),
-            ),
+            ] else ...[
+              const Text(
+                "Cette note a été annulée par l'employé. Vous pouvez la supprimer définitivement.",
+                style: TextStyle(color: Colors.grey, fontStyle: FontStyle.italic),
+              )
+            ],
           ],
         ),
         actions: [
+          // Bouton pour supprimer définitivement de la BDD
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              _deleteExpense(noteId);
+            },
+            child: const Text("Supprimer", style: TextStyle(color: Colors.red)),
+          ),
+          const Spacer(), // Pousse les autres boutons vers la droite
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text("Annuler"),
+            child: const Text("Fermer"),
           ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.red, foregroundColor: Colors.white),
-            onPressed: () {
-              if (motifController.text.trim().isEmpty) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text("Veuillez indiquer un motif de rejet")),
-                );
-                return;
-              }
-              Navigator.pop(context);
-              _updateNoteStatus(noteId, 'rejete', motif: motifController.text);
-            },
-            child: const Text("Rejeter"),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.green, foregroundColor: Colors.white),
-            onPressed: () {
-              Navigator.pop(context);
-              _updateNoteStatus(noteId, 'valide');
-            },
-            child: const Text("Valider"),
-          ),
+          // N'afficher Rejeter / Valider que si la note n'est pas déjà annulée
+          if (currentStatus != 'annule') ...[
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.red, foregroundColor: Colors.white),
+              onPressed: () {
+                if (motifController.text.trim().isEmpty) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text("Veuillez indiquer un motif de rejet")),
+                  );
+                  return;
+                }
+                Navigator.pop(context);
+                _updateNoteStatus(noteId, 'rejete', motif: motifController.text);
+              },
+              child: const Text("Rejeter"),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.green, foregroundColor: Colors.white),
+              onPressed: () {
+                Navigator.pop(context);
+                _updateNoteStatus(noteId, 'valide');
+              },
+              child: const Text("Valider"),
+            ),
+          ]
         ],
+        actionsAlignment: MainAxisAlignment.spaceBetween,
       ),
     );
   }
@@ -188,6 +256,17 @@ class _EmployeeTrackingScreenState extends State<EmployeeTrackingScreen> {
                       _loadAllExpenses();
                     },
                   ),
+                  const SizedBox(width: 8),
+                  // Ajout du filtre pour les notes annulées
+                  ChoiceChip(
+                    label: const Text("Annulées"),
+                    selected: _selectedStatutFilter == 'annule',
+                    selectedColor: Colors.grey[300],
+                    onSelected: (selected) {
+                      setState(() => _selectedStatutFilter = 'annule');
+                      _loadAllExpenses();
+                    },
+                  ),
                 ],
               ),
             ),
@@ -205,21 +284,30 @@ class _EmployeeTrackingScreenState extends State<EmployeeTrackingScreen> {
                             final employeNom = _getEmployeeName(expense);
                             final titreFrais = expense['titre'] ?? expense['description'] ?? 'Frais';
                             
+                            // Détermination de la couleur selon le statut
                             Color statusColor = Colors.orange;
                             if (status == 'valide') statusColor = Colors.green;
                             if (status == 'rejete') statusColor = Colors.red;
+                            if (status == 'annule') statusColor = Colors.grey;
 
                             return Card(
                               margin: const EdgeInsets.symmetric(vertical: 8),
                               child: ListTile(
-                                onTap: () => _showActionDialog(expense),
+                                onTap: () => _showActionDialog(expense, status),
                                 leading: CircleAvatar(
-                                  backgroundColor: statusColor.withOpacity(0.2),
-                                  child: Icon(Icons.person, color: statusColor),
+                                  backgroundColor: statusColor.withValues(alpha: 0.2),
+                                  child: Icon(
+                                    status == 'annule' ? Icons.block : Icons.person, 
+                                    color: statusColor
+                                  ),
                                 ),
                                 title: Text(
                                   "$employeNom - $titreFrais",
-                                  style: const TextStyle(fontWeight: FontWeight.bold),
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    // Barrer le texte si la note est annulée
+                                    decoration: status == 'annule' ? TextDecoration.lineThrough : null,
+                                  ),
                                 ),
                                 subtitle: Text(
                                   "Montant : ${expense['montant_ttc']} € | Date : ${expense['date_depense'] ?? 'N/A'}",

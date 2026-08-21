@@ -60,27 +60,27 @@ class _UploadScreenState extends State<UploadScreen> {
   }
 
   Future<void> _pickFile() async {
-    try {
-      FilePickerResult? result = await FilePicker.platform.pickFiles(
-        type: FileType.custom,
-        allowedExtensions: ['pdf', 'jpg', 'jpeg', 'png'],
-        withData: true,
-      );
+  try {
+    // Dans la v12, pickFiles() retourne directement une List<PlatformFile>
+    List<PlatformFile> files = await FilePicker.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['pdf', 'jpg', 'jpeg', 'png'],
+    );
 
-      if (result != null && result.files.isNotEmpty) {
-        setState(() {
-          _selectedFile = result.files.single;
-        });
-        await _uploadAndAnalyze();
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("❌ Erreur lors de la sélection du fichier : $e")),
-        );
-      }
+    if (files.isNotEmpty) {
+      setState(() {
+        _selectedFile = files.first;
+      });
+      await _uploadAndAnalyze();
+    }
+  } catch (e) {
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("❌ Erreur lors de la sélection du fichier : $e")),
+      );
     }
   }
+}
 
   Future<void> _uploadAndAnalyze() async {
     if (_selectedFile == null) return;
@@ -93,12 +93,11 @@ class _UploadScreenState extends State<UploadScreen> {
       print("📦 [UPLOAD RESULT] : $result");
     } catch (e) {
       print("Erreur upload API : $e");
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
     }
 
-    setState(() => _isLoading = false);
-
     if (result != null) {
-      // Extraction robuste supportant plusieurs variantes de clés JSON renvoyées par l'API
       final data = result["note_creee"] ?? result["data"] ?? result;
 
       setState(() {
@@ -115,13 +114,21 @@ class _UploadScreenState extends State<UploadScreen> {
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("✅ Justificatif analysé par l'IA avec succès !")),
+          const SnackBar(
+            content: Text("⏳ Upload reçu. L'IA analyse le montant en arrière-plan..."),
+            backgroundColor: Colors.orange,
+            duration: Duration(seconds: 4),
+          ),
         );
       }
+
+      Future.delayed(const Duration(seconds: 3), () {
+        if (mounted) _fetchMyExpenses();
+      });
     } else {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("❌ Erreur lors de l'analyse du justificatif par l'IA.")),
+          const SnackBar(content: Text("❌ Erreur lors de l'envoi du justificatif.")),
         );
       }
     }
@@ -155,7 +162,7 @@ class _UploadScreenState extends State<UploadScreen> {
           );
         }
         _resetForm();
-        _fetchMyExpenses(); // Actualise l'historique de l'employé
+        _fetchMyExpenses();
       } else {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -228,23 +235,30 @@ class _UploadScreenState extends State<UploadScreen> {
                       border: Border.all(color: Colors.grey.shade400),
                     ),
                     child: _selectedFile != null
-                        ? ClipRRect(
-                            borderRadius: BorderRadius.circular(12),
-                            child: isPdfFile
-                                ? Column(
-                                    mainAxisAlignment: MainAxisAlignment.center,
-                                    children: [
-                                      const Icon(Icons.picture_as_pdf, size: 50, color: Colors.red),
-                                      const SizedBox(height: 8),
-                                      Text(_selectedFile!.name, textAlign: TextAlign.center),
-                                    ],
-                                  )
-                                : (kIsWeb
-                                    ? (_selectedFile!.bytes != null
-                                        ? Image.memory(_selectedFile!.bytes!, fit: BoxFit.cover)
-                                        : const Center(child: Text("Aperçu indisponible")))
-                                    : Image.file(File(_selectedFile!.path!), fit: BoxFit.cover)),
-                          )
+                          ? ClipRRect(
+                              borderRadius: BorderRadius.circular(12),
+                              child: isPdfFile
+                                  ? Column(
+                                      mainAxisAlignment: MainAxisAlignment.center,
+                                      children: [
+                                        const Icon(Icons.picture_as_pdf, size: 50, color: Colors.red),
+                                        const SizedBox(height: 8),
+                                        Text(_selectedFile!.name, textAlign: TextAlign.center),
+                                      ],
+                                    )
+                                  : (kIsWeb
+                                      ? FutureBuilder<Uint8List>(
+                                          future: _selectedFile!.readAsBytes(),
+                                          builder: (context, snapshot) {
+                                            if (snapshot.connectionState == ConnectionState.done &&
+                                                snapshot.hasData) {
+                                              return Image.memory(snapshot.data!, fit: BoxFit.cover);
+                                            }
+                                            return const Center(child: CircularProgressIndicator());
+                                          },
+                                        )
+                                      : Image.file(File(_selectedFile!.path!), fit: BoxFit.cover)),
+                            )
                         : const Center(
                             child: Text("Aucun justificatif sélectionné", style: TextStyle(color: Colors.grey)),
                           ),
@@ -300,43 +314,110 @@ class _UploadScreenState extends State<UploadScreen> {
               padding: const EdgeInsets.all(16.0),
               child: _isHistoryLoading
                   ? const Center(child: CircularProgressIndicator())
-                  : _myExpenses.isEmpty
-                      ? const Center(child: Text("Vous n'avez soumis aucune note de frais."))
-                      : RefreshIndicator(
-                          onRefresh: _fetchMyExpenses,
-                          child: ListView.builder(
-                            itemCount: _myExpenses.length,
-                            itemBuilder: (context, index) {
-                              final note = _myExpenses[index];
-                              final status = note['statut'] ?? 'en_attente';
-
-                              Color statusColor = Colors.orange;
-                              if (status == 'valide') statusColor = Colors.green;
-                              if (status == 'rejete') statusColor = Colors.red;
-
-                              return Card(
-                                margin: const EdgeInsets.symmetric(vertical: 8),
-                                child: ListTile(
-                                  title: Text(
-                                    note['titre'] ?? note['description'] ?? 'Frais',
-                                    style: const TextStyle(fontWeight: FontWeight.bold),
-                                  ),
-                                  subtitle: Text(
-                                    "Montant : ${note['montant_ttc']} €\nDate : ${note['date_depense'] ?? 'N/A'}",
-                                  ),
-                                  isThreeLine: true,
-                                  trailing: Chip(
-                                    label: Text(
-                                      status.toUpperCase(),
-                                      style: const TextStyle(color: Colors.white, fontSize: 11),
-                                    ),
-                                    backgroundColor: statusColor,
+                  : RefreshIndicator(
+                      onRefresh: _fetchMyExpenses,
+                      child: _myExpenses.isEmpty
+                          ? ListView(
+                              physics: const AlwaysScrollableScrollPhysics(),
+                              children: [
+                                SizedBox(
+                                  height: MediaQuery.of(context).size.height * 0.6,
+                                  child: const Center(
+                                    child: Text("Vous n'avez soumis aucune note de frais."),
                                   ),
                                 ),
-                              );
-                            },
-                          ),
-                        ),
+                              ],
+                            )
+                          : ListView.builder(
+                              physics: const AlwaysScrollableScrollPhysics(),
+                              itemCount: _myExpenses.length,
+                              itemBuilder: (context, index) {
+                                final note = _myExpenses[index];
+                                final status = note['statut'] ?? 'en_attente';
+                                final dateDepense = note['date_depense'] ?? 'N/A';
+                                final dateSoumission = note['date_soumission'];
+
+                                Color statusColor = Colors.orange;
+                                if (status == 'valide') statusColor = Colors.green;
+                                if (status == 'rejete' || status == 'annule') statusColor = Colors.red;
+
+                                String subtitleText = "Montant : ${note['montant_ttc']} €\nDate d'achat : $dateDepense";
+                                if (dateSoumission != null) {
+                                  subtitleText += "\nSoumis le : $dateSoumission";
+                                }
+
+                                return Card(
+                                  margin: const EdgeInsets.symmetric(vertical: 8),
+                                  child: ListTile(
+                                    title: Text(
+                                      note['titre'] ?? note['description'] ?? 'Frais',
+                                      style: const TextStyle(fontWeight: FontWeight.bold),
+                                    ),
+                                    subtitle: Text(subtitleText),
+                                    isThreeLine: true,
+                                    trailing: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Chip(
+                                          label: Text(
+                                            status.toUpperCase(),
+                                            style: const TextStyle(color: Colors.white, fontSize: 11),
+                                          ),
+                                          backgroundColor: statusColor,
+                                        ),
+                                        // Afficher le bouton d'annulation uniquement si la note est en attente
+                                        if (status == 'en_attente') ...[
+                                          const SizedBox(width: 4),
+                                          IconButton(
+                                            icon: const Icon(Icons.cancel_outlined, color: Colors.red),
+                                            tooltip: "Annuler la note",
+                                            onPressed: () async {
+                                              bool? confirm = await showDialog(
+                                                context: context,
+                                                builder: (context) => AlertDialog(
+                                                  title: const Text("Annuler la note"),
+                                                  content: const Text("Voulez-vous vraiment annuler cette demande de remboursement ?"),
+                                                  actions: [
+                                                    TextButton(
+                                                      onPressed: () => Navigator.pop(context, false),
+                                                      child: const Text("Non"),
+                                                    ),
+                                                    TextButton(
+                                                      onPressed: () => Navigator.pop(context, true),
+                                                      child: const Text("Oui, annuler", style: TextStyle(color: Colors.red)),
+                                                    ),
+                                                  ],
+                                                ),
+                                              );
+
+                                              if (confirm == true) {
+                                                // CORRECTION : Appel de cancelExpense au lieu de deleteExpense
+                                                bool success = await widget.apiService.cancelExpense(note['id']);
+                                                if (success) {
+                                                  if (context.mounted) {
+                                                    ScaffoldMessenger.of(context).showSnackBar(
+                                                      const SnackBar(content: Text("🚫 Note annulée avec succès")),
+                                                    );
+                                                  }
+                                                  _fetchMyExpenses();
+                                                } else {
+                                                  if (context.mounted) {
+                                                    ScaffoldMessenger.of(context).showSnackBar(
+                                                      const SnackBar(content: Text("❌ Erreur lors de l'annulation")),
+                                                    );
+                                                  }
+                                                }
+                                              }
+                                            },
+                                          ),
+                                        ],
+                                      ],
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
+                    ),
             ),
           ],
         ),

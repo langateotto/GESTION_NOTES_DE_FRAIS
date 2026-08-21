@@ -29,5 +29,5 @@ class AuthService {
     await prefs.remove(_keyToken);
     await prefs.remove(_keyRole);
   }
-  
+
 }

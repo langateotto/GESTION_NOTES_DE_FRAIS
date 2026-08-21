@@ -44,6 +44,7 @@ class NoteDeFraisReponse(BaseModel):
     statut: str
     url_justificatif: str
     utilisateur_id: int
+    date_soumission: Optional[datetime] = None
 
     class Config:
         from_attributes = True

@@ -1,14 +1,20 @@
-import os
+import os 
+import shutil
 import uuid
 import json
 from datetime import datetime
 from typing import Generator, Optional
-from fastapi import FastAPI, Depends, HTTPException, Form, UploadFile, File, Header, Request
+from fastapi import FastAPI, Depends, HTTPException, Form, UploadFile, File, Header, Request, BackgroundTasks
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
 import bcrypt
+from auth import get_current_user
+
+from fastapi import Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordRequestForm
+from security import creer_token_acces, verifier_mot_de_passe
 
 # Importez vos modèles depuis votre fichier models.py
 from models import Base, Utilisateur, NoteDeFrais, Justificatif, StatutEnum
@@ -17,9 +23,18 @@ from models import Base, Utilisateur, NoteDeFrais, Justificatif, StatutEnum
 from google import genai
 from google.genai import types
 
-# Clé API configurée directement ou via l'environnement
-API_KEY = os.environ.get("GCP_API_KEY")
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
 
+from passlib.context import CryptContext
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+# Définissez le dossier où seront stockés les justificatifs
+UPLOAD_DIR = "uploads"
+os.makedirs(UPLOAD_DIR, exist_ok=True) # Crée le dossier automatiquement s'il n'existe pas
+
+# Clé API configurée directement ou via l'environnement
+api_key = os.environ.get("GEMINI_API_KEY") 
 client = genai.Client(api_key=api_key) if api_key else None
 
 if not api_key:
@@ -64,8 +79,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-os.makedirs("statiques", exist_ok=True)
-app.mount("/statiques", StaticFiles(directory="statiques"), name="statiques")
+# 📂 Définition propre du dossier uploads avec un chemin absolu
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
+
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+# On monte le dossier sur la route "/uploads" pour correspondre à vos liens
+app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
+app.mount("/stockage_justificatifs", StaticFiles(directory="stockage_justificatifs"), name="stockage_justificatifs")
 
 
 # Fonction utilitaire pour nettoyer les montants
@@ -86,37 +108,116 @@ def clean_float(value) -> float:
 
 
 # ==========================================
+# FONCTION D'ANALYSE IA EN ARRIÈRE-PLAN
+# ==========================================
+def executer_analyse_ia_arriere_plan(note_id: int, file_path: str, file_extension: str):
+    """Exécute l'appel à Gemini avec des filtres de sécurité assouplis pour les factures."""
+    if not client:
+        return
+
+    db = SessionLocal()
+    try:
+        if not os.path.exists(file_path):
+            print(f"⚠️ Fichier introuvable sur le disque : {file_path}")
+            return
+
+        with open(file_path, "rb") as f:
+            contents = f.read()
+
+        mime_type = "application/pdf" if file_extension == ".pdf" else "image/jpeg"
+        if file_extension == ".png":
+            mime_type = "image/png"
+
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=[
+                types.Part.from_bytes(data=contents, mime_type=mime_type),
+                (
+                    "Analyse ce justificatif de frais (facture, ticket ou billet).\n"
+                    "Extrais les informations sous un format JSON strict avec ces clés exactes :\n"
+                    "- \"montant_ttc\" (float, ex: 45.90)\n"
+                    "- \"montant_tva\" (float, ex: 7.50)\n"
+                    "- \"date_depense\" (format YYYY-MM-DD)\n"
+                    "- \"titre\" (string, nom du marchand ou description courte)\n\n"
+                    "Réponds UNIQUEMENT avec le JSON valide, sans texte additionnel."
+                ),
+            ],
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                temperature=0.1,
+                max_output_tokens=1000,
+                safety_settings=[
+                    types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold=types.HarmBlockThreshold.BLOCK_NONE),
+                    types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold=types.HarmBlockThreshold.BLOCK_NONE),
+                    types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_HARASSMENT, threshold=types.HarmBlockThreshold.BLOCK_NONE),
+                    types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold=types.HarmBlockThreshold.BLOCK_NONE),
+                ]
+            )
+        )
+
+        if not response or not hasattr(response, 'text') or not response.text:
+            print("⚠️ Erreur : Réponse vide de Gemini.")
+            return
+
+        response_text = response.text.strip()
+        if response_text.startswith("```json"):
+            response_text = response_text[7:-3].strip()
+        elif response_text.startswith("```"):
+            response_text = response_text[3:-3].strip()
+
+        extracted_data = json.loads(response_text)
+        
+        montant_ttc = clean_float(extracted_data.get("montant_ttc", 0.0))
+        montant_tva = clean_float(extracted_data.get("montant_tva", 0.0))
+        date_depense_str = extracted_data.get("date_depense", "")
+        nouveau_titre = extracted_data.get("titre")
+
+        note = db.query(NoteDeFrais).filter(NoteDeFrais.id == note_id).first()
+        if note:
+            note.montant_ttc = montant_ttc
+            note.montant_tva = montant_tva
+            if nouveau_titre:
+                note.titre = nouveau_titre
+            if date_depense_str:
+                try:
+                    note.date_depense = datetime.strptime(date_depense_str, "%Y-%m-%d").date()
+                except ValueError:
+                    pass
+            db.commit()
+            print(f"✅ Note {note_id} mise à jour avec succès par l'IA.")
+
+    except json.JSONDecodeError as json_err:
+        print(f"⚠️ Erreur de format JSON reçu de l'IA : {json_err}")
+    except Exception as ai_error:
+        print(f"⚠️ Erreur inattendue lors de l'analyse IA : {ai_error}")
+    finally:
+        db.close()
+
+
+# ==========================================
 # 3. ROUTES DE L'API
 # ==========================================
 
 @app.post("/login")
-async def login(
-    username: str = Form(...),
-    password: str = Form(...),
-    db: Session = Depends(get_db)
-):
-    user = db.query(Utilisateur).filter(Utilisateur.email == username).first()
+async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    user = db.query(Utilisateur).filter(Utilisateur.email == form_data.username).first()
     
-    if not user:
-        raise HTTPException(status_code=400, detail="Identifiants incorrects")
-    
-    password_bytes = password.encode('utf-8')
-    stored_hash_bytes = user.mot_de_passe.encode('utf-8')
+    if not user or not verifier_mot_de_passe(form_data.password, user.mot_de_passe):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Email ou mot de passe incorrect",
+        )
 
-    try:
-        is_valid = bcrypt.checkpw(password_bytes, stored_hash_bytes)
-    except Exception:
-        is_valid = False
+    access_token = creer_token_acces(donnees={
+        "sub": str(user.id), 
+        "role": user.role
+    })
 
-    if not is_valid:
-        raise HTTPException(status_code=400, detail="Identifiants incorrects")
-    
     return {
-        "access_token": "fake-jwt-token-pour-test",
+        "access_token": access_token,
         "token_type": "bearer",
-        "role": user.role.value if hasattr(user.role, "value") else user.role
+        "role": user.role
     }
-
 
 @app.get("/notes/en-attente")
 async def get_notes_en_attente(db: Session = Depends(get_db)):
@@ -125,8 +226,20 @@ async def get_notes_en_attente(db: Session = Depends(get_db)):
         
         result = []
         for note in notes:
-            justificatif_url = note.justificatif.url_fichier if note.justificatif else None
-            employe_nom = f"{note.utilisateur.prenom} {note.utilisateur.nom}" if hasattr(note, 'utilisateur') and note.utilisateur else "Employé"
+            justificatif_url = note.justificatifs[0].url_fichier if hasattr(note, 'justificatifs') and note.justificatifs else None
+            
+            employe_nom = "Employé"
+            
+            # On cherche l'objet utilisateur lié (via 'employe', 'utilisateur' ou 'user')
+            user_obj = getattr(note, 'employe', None) or getattr(note, 'utilisateur', None) or getattr(note, 'user', None)
+            
+            if user_obj:
+                # 🛠️ Utilisation de 'nom_user' d'après votre structure de base de données
+                employe_nom = getattr(user_obj, 'nom_user', None) or getattr(user_obj, 'username', 'Employé')
+            elif note.utilisateur_id:
+                employe_nom = f"Utilisateur #{note.utilisateur_id}"
+            
+            val_statut = note.statut.value if hasattr(note.statut, "value") else note.statut
             
             result.append({
                 "id": note.id,
@@ -135,9 +248,10 @@ async def get_notes_en_attente(db: Session = Depends(get_db)):
                 "montant_tva": float(note.montant_tva),
                 "devise": note.devise,
                 "date_depense": str(note.date_depense),
-                "statut": note.statut.value if hasattr(note.statut, "value") else note.statut,
+                "date_soumission": str(note.date_soumission) if hasattr(note, 'date_soumission') and note.date_soumission else None,
+                "statut": val_statut,
                 "justificatif_url": justificatif_url,
-                "employe_nom": employe_nom,
+                "employe_nom": employe_nom, # Le nom correct (ex: LOTTO, Loge) va s'afficher
                 "user_id": note.utilisateur_id
             })
         return result
@@ -153,15 +267,29 @@ async def get_all_expenses(
 ):
     try:
         query = db.query(NoteDeFrais)
+        
         if statut:
-            query = query.filter(NoteDeFrais.statut == statut)
+            try:
+                enum_statut = StatutEnum(statut)
+                query = query.filter(NoteDeFrais.statut == enum_statut)
+            except ValueError:
+                return []
             
         notes = query.all()
         
         result = []
         for note in notes:
-            justificatif_url = note.justificatif.url_fichier if note.justificatif else None
-            employe_nom = f"{note.utilisateur.prenom} {note.utilisateur.nom}" if hasattr(note, 'utilisateur') and note.utilisateur else "Employé"
+            val_statut = note.statut.value if hasattr(note.statut, "value") else note.statut
+            justificatif_url = note.justificatifs[0].url_fichier if hasattr(note, 'justificatifs') and note.justificatifs else None
+            
+            # 🔍 Récupération du nom de l'employé via nom_user
+            employe_nom = "Employé"
+            for rel_name in ['employe', 'utilisateur']:
+                if hasattr(note, rel_name) and getattr(note, rel_name):
+                    rel_obj = getattr(note, rel_name)
+                    if hasattr(rel_obj, 'nom_user') and rel_obj.nom_user:
+                        employe_nom = rel_obj.nom_user
+                        break
             
             result.append({
                 "id": note.id,
@@ -170,7 +298,7 @@ async def get_all_expenses(
                 "montant_tva": float(note.montant_tva),
                 "devise": note.devise,
                 "date_depense": str(note.date_depense),
-                "statut": note.statut.value if hasattr(note.statut, "value") else note.statut,
+                "statut": val_statut,
                 "justificatif_url": justificatif_url,
                 "employe_nom": employe_nom,
                 "user_id": note.utilisateur_id
@@ -193,9 +321,20 @@ async def update_note_status(
         if not note:
             raise HTTPException(status_code=404, detail="Note de frais introuvable")
             
-        note.statut = statut
+        # Nettoyage de la valeur reçue (minuscules, suppression des espaces)
+        statut_clean = statut.strip().lower()
+        
+        try:
+            note.statut = StatutEnum(statut_clean)
+        except ValueError:
+            # Fallback : si l'enum utilise des accents ou un autre format
+            note.statut = statut_clean  
+
         db.commit()
-        return {"message": "Statut mis à jour avec succès", "id": note.id, "nouveau_statut": note.statut}
+        db.refresh(note)
+        
+        val_statut = note.statut.value if hasattr(note.statut, "value") else note.statut
+        return {"message": "Statut mis à jour avec succès", "id": note.id, "nouveau_statut": val_statut}
     except Exception as e:
         db.rollback()
         print(f"🔥 Erreur mise à jour statut : {e}")
@@ -206,14 +345,17 @@ async def update_note_status(
 @app.get("/notes/my-notes")
 async def get_mes_notes(
     db: Session = Depends(get_db),
-    current_user: Utilisateur = Depends(get_current_user_from_token)
+    current_user = Depends(get_current_user)
 ):
     try:
-        notes = db.query(NoteDeFrais).filter(NoteDeFrais.utilisateur_id == current_user.id).all()
+        # Sécurisation de l'ID utilisateur (si current_user est un objet ou un int)
+        user_id = current_user.id if hasattr(current_user, 'id') else current_user
+        notes = db.query(NoteDeFrais).filter(NoteDeFrais.utilisateur_id == user_id).all()
         
         result = []
         for note in notes:
-            justificatif_url = note.justificatif.url_fichier if note.justificatif else None
+            justificatif_url = note.justificatifs[0].url_fichier if hasattr(note, 'justificatifs') and note.justificatifs else None
+            val_statut = note.statut.value if hasattr(note.statut, "value") else note.statut
             
             result.append({
                 "id": note.id,
@@ -222,7 +364,8 @@ async def get_mes_notes(
                 "montant_tva": float(note.montant_tva),
                 "devise": note.devise,
                 "date_depense": str(note.date_depense),
-                "statut": note.statut.value if hasattr(note.statut, "value") else note.statut,
+                "date_soumission": str(note.date_soumission) if hasattr(note, 'date_soumission') and note.date_soumission else None,
+                "statut": val_statut,
                 "justificatif_url": justificatif_url
             })
         return result
@@ -232,135 +375,121 @@ async def get_mes_notes(
 
 
 @app.post("/notes/upload-justificatif")
-async def upload_justificatif(
-    file: UploadFile = File(...),
-    db: Session = Depends(get_db),
-    current_user: Utilisateur = Depends(get_current_user_from_token)
-):
-    try:
-        file_extension = os.path.splitext(file.filename)[1].lower()
-        unique_filename = f"{uuid.uuid4()}{file_extension}"
-        file_path = os.path.join("statiques", unique_filename)
-        
-        contents = await file.read()
-        with open(file_path, "wb") as buffer:
-            buffer.write(contents)
-        
-        justificatif_url = f"/statiques/{unique_filename}"
+async def upload_justificatif(file: UploadFile = File(...), db: Session = Depends(get_db), current_user = Depends(get_current_user)):
+    user_id = current_user.id if hasattr(current_user, 'id') else current_user
+    file_extension = os.path.splitext(file.filename)[1]
+    file_name = f"{uuid.uuid4()}{file_extension}"
+    file_path = os.path.join(UPLOAD_DIR, file_name)
+    
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+    
+    justificatif_url = f"/uploads/{file_name}"
 
-        montant_ttc = 0.0
-        montant_tva = 0.0
-        date_depense_str = ""
-        titre = f"Note - {file.filename}"
+    montant_ttc = 0.0
+    montant_tva = 0.0
+    date_depense = datetime.now().date()
+    titre = f"Note de frais - {file.filename}"
 
-        if client:
-            try:
-                mime_type = "application/pdf" if file_extension == ".pdf" else "image/jpeg"
-                if file_extension == ".png":
-                    mime_type = "image/png"
+    if client:
+        try:
+            with open(file_path, "rb") as f:
+                contents = f.read()
 
-                response = client.models.generate_content(
-                    model='gemini-3.6-flash', 
-                    contents=[
-                        types.Part.from_bytes(
-                            data=contents,
-                            mime_type=mime_type,
-                        ),
-                        (
-                            "Tu es un expert comptable. Analyse ce document (facture, ticket de caisse ou billet de train type OUIGO).\n"
-                            "Extrais les informations suivantes sous un format JSON strict :\n\n"
-                            "- \"montant_ttc\" : Le montant TOTAL payé (cherche les mots clés 'TOTAL', 'TTC', 'NET A PAYER' ou 'Total voyageur'). Si absent, mets 0.0.\n"
-                            "- \"montant_tva\" : Le montant total de la TVA. Si la TVA n'est pas explicitement écrite, mets 0.0.\n"
-                            "- \"date_depense\" : La date de la dépense ou du voyage au format AAAA-MM-JJ (ex: 2026-05-03). Si introuvable, chaîne vide.\n"
-                            "- \"titre\" : Le nom du marchand ou un court résumé du trajet/dépense (ex: 'OUIGO - Paris / Marseille', 'Restaurant Le Bouchon').\n\n"
-                            "Réponds UNIQUEMENT avec un objet JSON valide, sans texte additionnel et sans blocs de code markdown."
-                        ),
-                    ],
-                    config=types.GenerateContentConfig(
-                        response_mime_type="application/json"
-                    )
+            mime_type = "application/pdf" if file_extension == ".pdf" else "image/jpeg"
+            if file_extension == ".png":
+                mime_type = "image/png"
+
+            response = client.models.generate_content(
+                model='gemini-3.6-flash',
+                contents=[
+                    types.Part.from_bytes(data=contents, mime_type=mime_type),
+                    (
+                        "Analyse ce justificatif de frais (facture, ticket ou billet).\n"
+                        "Extrais les informations sous un format JSON strict avec ces clés exactes :\n"
+                        "- \"montant_ttc\" (float, ex: 35.00)\n"
+                        "- \"montant_tva\" (float, ex: 7.50)\n"
+                        "- \"date_depense\" (format YYYY-MM-DD - la date d'achat figurant sur le ticket)\n"
+                        "- \"titre\" (string, nom du marchand ou description courte)\n\n"
+                        "Réponds UNIQUEMENT avec le JSON valide, sans texte additionnel."
+                    ),
+                ],
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    temperature=0.1,
+                    max_output_tokens=1000
                 )
+            )
 
+            if response and hasattr(response, 'text') and response.text:
                 response_text = response.text.strip()
-                
                 if response_text.startswith("```json"):
                     response_text = response_text[7:-3].strip()
                 elif response_text.startswith("```"):
                     response_text = response_text[3:-3].strip()
 
-                print(f"🤖 Réponse brute de l'IA : {response_text}")
-
                 extracted_data = json.loads(response_text)
-                
                 montant_ttc = clean_float(extracted_data.get("montant_ttc", 0.0))
                 montant_tva = clean_float(extracted_data.get("montant_tva", 0.0))
-                date_depense_str = extracted_data.get("date_depense", "")
-                
                 if extracted_data.get("titre"):
                     titre = extracted_data.get("titre")
+                if extracted_data.get("date_depense"):
+                    try:
+                        date_depense = datetime.strptime(extracted_data.get("date_depense"), "%Y-%m-%d").date()
+                    except ValueError:
+                        pass
+        except Exception as e:
+            print(f"⚠️ Avertissement : L'analyse IA a échoué ({e}), création avec valeurs par défaut.")
 
-            except Exception as ai_error:
-                import traceback
-                print(f"⚠️ Erreur lors de l'analyse IA : {ai_error}")
-                traceback.print_exc()
-        else:
-            print("ℹ️ Analyse IA ignorée (aucune clé API configurée).")
+    nouvelle_note = NoteDeFrais(
+        utilisateur_id=user_id,
+        titre=titre,
+        montant_ttc=montant_ttc,
+        montant_tva=montant_tva,
+        devise="EUR",
+        date_depense=date_depense,
+        statut=StatutEnum.en_attente
+    )
+    db.add(nouvelle_note)
+    db.commit()
+    db.refresh(nouvelle_note)
 
-        try:
-            date_depense = datetime.strptime(date_depense_str, "%Y-%m-%d").date() if date_depense_str else datetime.now().date()
-        except ValueError:
-            date_depense = datetime.now().date()
-
-        # Enregistrement dans la base MySQL
-        nouvelle_note = NoteDeFrais(
-            titre=titre,
-            montant_ttc=montant_ttc,
-            montant_tva=montant_tva,
-            devise="EUR",
-            date_depense=date_depense,
-            statut=StatutEnum.en_attente,
-            utilisateur_id=current_user.id
-        )
-        db.add(nouvelle_note)
-        db.commit()
-        db.refresh(nouvelle_note)
-
+    try:
         nouveau_justificatif = Justificatif(
-            url_fichier=justificatif_url,
-            note_de_frais_id=nouvelle_note.id
+            note_de_frais_id=nouvelle_note.id,
+            url_fichier=justificatif_url
         )
         db.add(nouveau_justificatif)
         db.commit()
+    except Exception as j_err:
+        print(f"⚠️ Erreur insertion justificatif : {j_err}")
 
-        return {
-            "message": "Succès",
-            "note_creee": {
-                "id": nouvelle_note.id,
-                "titre": nouvelle_note.titre,
-                "montant_ttc": float(nouvelle_note.montant_ttc),
-                "montant_tva": float(nouvelle_note.montant_tva),
-                "date_depense": str(nouvelle_note.date_depense),
-                "justificatif_url": justificatif_url
-            }
+    date_soumission_str = str(nouvelle_note.date_soumission) if hasattr(nouvelle_note, 'date_soumission') and nouvelle_note.date_soumission else str(datetime.now())
+
+    return {
+        "message": "Fichier uploadé et enregistré avec succès",
+        "note_creee": {
+            "id": nouvelle_note.id,
+            "titre": nouvelle_note.titre,
+            "montant_ttc": float(nouvelle_note.montant_ttc),
+            "montant_tva": float(nouvelle_note.montant_tva),
+            "date_depense": str(nouvelle_note.date_depense),
+            "date_soumission": date_soumission_str,
+            "justificatif_url": justificatif_url
         }
-
-    except Exception as e:
-        print(f"🔥 Erreur serveur upload : {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    }
 
 
 @app.post("/notes/")
 async def create_note(
     request: Request,
     db: Session = Depends(get_db),
-    current_user: Utilisateur = Depends(get_current_user_from_token)
+    current_user = Depends(get_current_user_from_token)
 ):
-    """
-    Route de secours universelle (gère formulaire ou JSON) pour éviter les erreurs 422 
-    si Flutter tente d'envoyer des données directement ici.
-    """
     try:
+        user_id = current_user.id if hasattr(current_user, 'id') else current_user
         content_type = request.headers.get("content-type", "")
+        
         if "application/json" in content_type:
             data = await request.json()
             titre = data.get("titre", "Note manuelle")
@@ -384,7 +513,7 @@ async def create_note(
             devise="EUR",
             date_depense=date_depense,
             statut=StatutEnum.en_attente,
-            utilisateur_id=current_user.id
+            utilisateur_id=user_id
         )
         db.add(nouvelle_note)
         db.commit()
@@ -394,3 +523,76 @@ async def create_note(
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
+    
+
+@app.put("/notes/{note_id}/annuler")
+async def annuler_note_employe(
+    note_id: int,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    try:
+        user_id = current_user.id if hasattr(current_user, 'id') else current_user
+
+        note = db.query(NoteDeFrais).filter(
+            NoteDeFrais.id == note_id, 
+            NoteDeFrais.utilisateur_id == user_id
+        ).first()
+        
+        if not note:
+            raise HTTPException(status_code=404, detail="Note de frais introuvable ou accès non autorisé.")
+        
+        if note.statut != StatutEnum.en_attente:
+            raise HTTPException(
+                status_code=400, 
+                detail="Impossible d'annuler une note déjà traitée."
+            )
+        
+        note.statut = StatutEnum.annule
+        db.commit()
+        
+        return {"message": "Note de frais annulée avec succès."}
+        
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        db.rollback()
+        print(f"🔥 ERREUR CRITIQUE lors de l'annulation : {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    
+
+@app.delete("/notes/{note_id}")
+async def supprimer_note_comptable(
+    note_id: int,
+    db: Session = Depends(get_db)
+):
+    try:
+        note = db.query(NoteDeFrais).filter(NoteDeFrais.id == note_id).first()
+        if not note:
+            raise HTTPException(status_code=404, detail="Note de frais introuvable.")
+        
+        # Supprimer le fichier physique associé du serveur s'il existe
+        if hasattr(note, 'justificatifs') and note.justificatifs:
+            for justificatif in note.justificatifs:
+                if justificatif.url_fichier:
+                    # Extraire le nom du fichier depuis l'URL (ex: /uploads/abc.png -> abc.png)
+                    filename = justificatif.url_fichier.split("/")[-1]
+                    file_path = os.path.join(UPLOAD_DIR, filename)
+                    if os.path.exists(file_path):
+                        try:
+                            os.remove(file_path)
+                            print(f"🗑️ Fichier physique supprimé : {file_path}")
+                        except Exception as ex:
+                            print(f"⚠️ Impossible de supprimer le fichier physique : {ex}")
+
+        db.delete(note)
+        db.commit()
+        
+        return {"message": "Note de frais et justificatif supprimés avec succès."}
+        
+    except Exception as e:
+        db.rollback()
+        print(f"🔥 ERREUR lors de la suppression : {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    
+

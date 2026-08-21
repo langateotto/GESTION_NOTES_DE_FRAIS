@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 class ApiService {
   final String baseUrl = "http://127.0.0.1:8000";
 
+
   Future<Map<String, dynamic>> login(String username, String password) async {
     try {
       final response = await http.post(
@@ -49,53 +50,41 @@ class ApiService {
   }
 
   Future<Map<String, dynamic>?> uploadJustificatifWeb(PlatformFile file) async {
-    try {
-      var request = http.MultipartRequest(
-        'POST',
-        Uri.parse("$baseUrl/notes/upload-justificatif"),
-      );
-      
-      String? token = await AuthService.getToken();
-      if (token != null) {
-        request.headers['Authorization'] = 'Bearer $token';
-      }
+  try {
+    var request = http.MultipartRequest(
+      'POST',
+      Uri.parse("$baseUrl/notes/upload-justificatif"),
+    );
+    
+    String? token = await AuthService.getToken();
+    if (token != null) {
+      request.headers['Authorization'] = 'Bearer $token';
+    }
 
-      // Gestion universelle bytes (Web/Mobile) ou path (Mobile)
-      if (file.bytes != null) {
-        request.files.add(
-          http.MultipartFile.fromBytes(
-            'file',
-            file.bytes!,
-            filename: file.name,
-          ),
-        );
-      } else if (file.path != null) {
-        request.files.add(
-          await http.MultipartFile.fromPath(
-            'file',
-            file.path!,
-            filename: file.name,
-          ),
-        );
-      } else {
-        print("Erreur d'upload : Aucun contenu trouvé pour le fichier.");
-        return null;
-      }
+    // Utilisation de readAsBytes() (compatible v12)
+    final bytes = await file.readAsBytes();
+    request.files.add(
+      http.MultipartFile.fromBytes(
+        'file',
+        bytes,
+        filename: file.name,
+      ),
+    );
 
-      var streamedResponse = await request.send();
-      var response = await http.Response.fromStream(streamedResponse);
+    var streamedResponse = await request.send();
+    var response = await http.Response.fromStream(streamedResponse);
 
-      if (response.statusCode == 200 || response.statusCode == 201) {
-        return jsonDecode(response.body);
-      } else {
-        print("Erreur d'upload : ${response.body}");
-        return null;
-      }
-    } catch (e) {
-      print("Exception lors de l'upload : $e");
+    if (response.statusCode == 200 || response.statusCode == 201) {
+      return jsonDecode(response.body);
+    } else {
+      print("Erreur d'upload : ${response.body}");
       return null;
     }
+  } catch (e) {
+    print("Exception lors de l'upload : $e");
+    return null;
   }
+}
 
   Future<bool> register(String nom, String email, String password, String role) async {
     try {
@@ -122,7 +111,6 @@ class ApiService {
     }
   }
 
-  // ==================== AJOUTÉ : Création définitive de la note de frais ====================
   Future<bool> createExpense({
     required String titre,
     required double montantTtc,
@@ -133,7 +121,7 @@ class ApiService {
     try {
       final token = await AuthService.getToken();
       final response = await http.post(
-        Uri.parse('$baseUrl/notes/'), // Adaptez l'endpoint si besoin selon votre FastAPI (ex: /notes ou /notes/create)
+        Uri.parse('$baseUrl/notes/'),
         headers: {
           'Content-Type': 'application/json',
           if (token != null) 'Authorization': 'Bearer $token',
@@ -154,12 +142,11 @@ class ApiService {
     }
   }
 
-  // ==================== AJOUTÉ : Récupérer ses propres notes (Suivi employé) ====================
   Future<List<dynamic>?> getMyExpenses() async {
     try {
       final token = await AuthService.getToken();
       final response = await http.get(
-        Uri.parse('$baseUrl/notes/my-notes'), // Adaptez l'endpoint selon votre route backend
+        Uri.parse('$baseUrl/notes/my-notes'),
         headers: {
           'Content-Type': 'application/json',
           if (token != null) 'Authorization': 'Bearer $token',
@@ -238,4 +225,42 @@ class ApiService {
       throw Exception("Erreur lors de la récupération des notes de frais");
     }
   }
+
+  // Suppression définitive (Utilisée par le comptable)
+  Future<bool> deleteExpense(int noteId) async {
+    try {
+      final token = await AuthService.getToken();
+      final response = await http.delete(
+        Uri.parse('$baseUrl/notes/$noteId'),
+        headers: {
+          'Content-Type': 'application/json',
+          if (token != null) 'Authorization': 'Bearer $token',
+        },
+      );
+      return response.statusCode == 200;
+    } catch (e) {
+      print("Erreur suppression note : $e");
+      return false;
+    }
+  }
+
+  // Annulation par l'employé (si votre backend propose une route PUT dédiée, ex: /notes/{id}/annuler)
+  Future<bool> cancelExpense(int noteId) async {
+    try {
+      final token = await AuthService.getToken();
+      final response = await http.put(
+        Uri.parse('$baseUrl/notes/$noteId/annuler'),
+        headers: {
+          'Content-Type': 'application/json',
+        if (token != null) 'Authorization': 'Bearer $token',
+        },
+      );
+      return response.statusCode == 200;
+    } catch (e) {
+      print("Erreur annulation note employé : $e");
+      return false;
+    }
+  }
+
+  
 }

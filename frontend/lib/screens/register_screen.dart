@@ -98,7 +98,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
             const SizedBox(height: 16),
             // Sélecteur pour respecter l'enum SQL ('employe','manager','comptable')
             DropdownButtonFormField<String>(
-              value: _selectedRole,
+              initialValue: _selectedRole,
               decoration: const InputDecoration(
                 labelText: "Rôle",
                 border: OutlineInputBorder(),
