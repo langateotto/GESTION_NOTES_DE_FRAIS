@@ -1,12 +1,13 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:file_picker/file_picker.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'auth_service.dart';
 import 'package:flutter/foundation.dart';
 
+
 class ApiService {
   final String baseUrl = "http://127.0.0.1:8000";
-
 
   Future<Map<String, dynamic>> login(String username, String password) async {
     try {
@@ -50,41 +51,40 @@ class ApiService {
   }
 
   Future<Map<String, dynamic>?> uploadJustificatifWeb(PlatformFile file) async {
-  try {
-    var request = http.MultipartRequest(
-      'POST',
-      Uri.parse("$baseUrl/notes/upload-justificatif"),
-    );
-    
-    String? token = await AuthService.getToken();
-    if (token != null) {
-      request.headers['Authorization'] = 'Bearer $token';
-    }
+    try {
+      var request = http.MultipartRequest(
+        'POST',
+        Uri.parse("$baseUrl/notes/upload-justificatif"),
+      );
+      
+      String? token = await AuthService.getToken();
+      if (token != null) {
+        request.headers['Authorization'] = 'Bearer $token';
+      }
 
-    // Utilisation de readAsBytes() (compatible v12)
-    final bytes = await file.readAsBytes();
-    request.files.add(
-      http.MultipartFile.fromBytes(
-        'file',
-        bytes,
-        filename: file.name,
-      ),
-    );
+      final bytes = await file.readAsBytes();
+      request.files.add(
+        http.MultipartFile.fromBytes(
+          'file',
+          bytes,
+          filename: file.name,
+        ),
+      );
 
-    var streamedResponse = await request.send();
-    var response = await http.Response.fromStream(streamedResponse);
+      var streamedResponse = await request.send();
+      var response = await http.Response.fromStream(streamedResponse);
 
-    if (response.statusCode == 200 || response.statusCode == 201) {
-      return jsonDecode(response.body);
-    } else {
-      print("Erreur d'upload : ${response.body}");
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        return jsonDecode(response.body);
+      } else {
+        print("Erreur d'upload : ${response.body}");
+        return null;
+      }
+    } catch (e) {
+      print("Exception lors de l'upload : $e");
       return null;
     }
-  } catch (e) {
-    print("Exception lors de l'upload : $e");
-    return null;
   }
-}
 
   Future<bool> register(String nom, String email, String password, String role) async {
     try {
@@ -226,7 +226,6 @@ class ApiService {
     }
   }
 
-  // Suppression définitive (Utilisée par le comptable)
   Future<bool> deleteExpense(int noteId) async {
     try {
       final token = await AuthService.getToken();
@@ -244,7 +243,6 @@ class ApiService {
     }
   }
 
-  // Annulation par l'employé (si votre backend propose une route PUT dédiée, ex: /notes/{id}/annuler)
   Future<bool> cancelExpense(int noteId) async {
     try {
       final token = await AuthService.getToken();
@@ -252,7 +250,7 @@ class ApiService {
         Uri.parse('$baseUrl/notes/$noteId/annuler'),
         headers: {
           'Content-Type': 'application/json',
-        if (token != null) 'Authorization': 'Bearer $token',
+          if (token != null) 'Authorization': 'Bearer $token',
         },
       );
       return response.statusCode == 200;
@@ -262,5 +260,75 @@ class ApiService {
     }
   }
 
+  // --- NOUVELLES FONCTIONS INTÉGRÉES À LA CLASSE ---
+
+ Future<bool> resetUserPassword(int userId, String newPassword) async {
+    try {
+      final token = await AuthService.getToken();
+      final response = await http.put(
+        Uri.parse('$baseUrl/admin/users/$userId/password'),
+        headers: {
+          "Authorization": "Bearer ${token ?? ''}",
+          "Content-Type": "application/json"
+        },
+        // Changez "new_password" par "password" si c'est ce que votre route Python attend
+        body: jsonEncode({"password": newPassword}),
+      );
+      return response.statusCode == 200;
+    } catch (e) {
+      print("Erreur reset password : $e");
+      return false;
+    }
+  }
+
+  Future<List<dynamic>> getAllUsers() async {
+    try {
+      final token = await AuthService.getToken();
+      final response = await http.get(
+        Uri.parse('$baseUrl/users'),
+        headers: {
+          "Authorization": "Bearer ${token ?? ''}",
+          "Content-Type": "application/json"
+        },
+      );
+
+      if (response.statusCode == 200) {
+        return jsonDecode(response.body);
+      } else {
+        throw Exception('Erreur lors du chargement des utilisateurs');
+      }
+    } catch (e) {
+      print("Erreur getAllUsers : $e");
+      rethrow;
+    }
+  }
+
+ Future<bool> resetPassword(int userId, String newPassword) async {
+  final url = Uri.parse('$baseUrl/admin/users/$userId/password');
   
+  try {
+    final response = await http.put(
+      url,
+      headers: {"Content-Type": "application/json"},
+      body: jsonEncode({"password": newPassword}),
+    );
+    
+    print("Code HTTP : ${response.statusCode}");
+    print("Réponse du serveur : ${response.body}");
+    
+    if (response.statusCode == 200) {
+      return true;
+    } else {
+      throw Exception("Erreur serveur : ${response.statusCode} - ${response.body}");
+    }
+  } catch (e) {
+    print("Exception attrapée : $e");
+    rethrow;
+  }
+  }
+
+  Future<void> logout() async {
+  final prefs = await SharedPreferences.getInstance();
+  await prefs.remove('access_token'); // Adaptez la clé selon ce que vous utilisez pour stocker votre token
+}
 }

@@ -3,6 +3,7 @@ import '../services/api_service.dart';
 import 'upload_screen.dart';
 import 'register_screen.dart';
 import 'accountant/accountant_dashboard_screen.dart';
+import 'UserManagementScreen.dart'; 
 
 class LoginScreen extends StatefulWidget {
   final ApiService apiService;
@@ -47,6 +48,7 @@ class _LoginScreenState extends State<LoginScreen> {
       });
 
       if (success) {
+        // Redirection conditionnelle selon le rôle renvoyé par le backend
         if (role == "comptable") {
           Navigator.pushReplacement(
             context,
@@ -54,7 +56,16 @@ class _LoginScreenState extends State<LoginScreen> {
               builder: (context) => AccountantDashboardScreen(apiService: widget.apiService),
             ),
           );
+        } else if (role == "manager") {
+          // Redirection vers l'écran du manager
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(
+              builder: (context) => UserManagementScreen(apiService: widget.apiService),
+            ),
+          );
         } else {
+          // Par défaut : Employé
           Navigator.pushReplacement(
             context,
             MaterialPageRoute(
@@ -76,7 +87,6 @@ class _LoginScreenState extends State<LoginScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      // Suppression de l'AppBar classique pour un look plus immersif "plein écran"
       body: Container(
         decoration: BoxDecoration(
           gradient: LinearGradient(
@@ -107,7 +117,6 @@ class _LoginScreenState extends State<LoginScreen> {
                       mainAxisSize: MainAxisSize.min,
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        // 🏢 LOGO / ICÔNE DE L'ENTREPRISE
                         Center(
                           child: Container(
                             padding: const EdgeInsets.all(16),
@@ -120,16 +129,9 @@ class _LoginScreenState extends State<LoginScreen> {
                               size: 48,
                               color: Colors.blue[800],
                             ),
-                            /* 
-                              Astuce : Si vous possédez un vrai logo d'entreprise, 
-                              vous pouvez remplacer le Container ci-dessus par :
-                              Image.asset('assets/images/logo.png', height: 70),
-                            */
                           ),
                         ),
                         const SizedBox(height: 24),
-
-                        // TITRE
                         const Text(
                           "Gestion Notes de Frais",
                           style: TextStyle(
@@ -149,8 +151,6 @@ class _LoginScreenState extends State<LoginScreen> {
                           textAlign: TextAlign.center,
                         ),
                         const SizedBox(height: 32),
-
-                        // CHAMP EMAIL / USERNAME
                         TextFormField(
                           controller: _usernameController,
                           keyboardType: TextInputType.emailAddress,
@@ -169,8 +169,6 @@ class _LoginScreenState extends State<LoginScreen> {
                           },
                         ),
                         const SizedBox(height: 20),
-
-                        // CHAMP MOT DE PASSE
                         TextFormField(
                           controller: _passwordController,
                           obscureText: _obscurePassword,
@@ -199,8 +197,6 @@ class _LoginScreenState extends State<LoginScreen> {
                           },
                         ),
                         const SizedBox(height: 30),
-
-                        // BOUTON DE CONNEXION
                         SizedBox(
                           height: 50,
                           child: ElevatedButton(
@@ -232,17 +228,15 @@ class _LoginScreenState extends State<LoginScreen> {
                           ),
                         ),
                         const SizedBox(height: 20),
-
-                        // LIEN INSCRIPTION
                         TextButton(
                           onPressed: () {
-                            Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (context) => RegisterScreen(apiService: widget.apiService),
-                              ),
-                            );
-                          },
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) => RegisterScreen(apiService: widget.apiService),
+                            ),
+                          );
+                        },
                           child: Text(
                             "Pas encore de compte ? S'inscrire",
                             style: TextStyle(

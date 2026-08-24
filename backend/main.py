@@ -2,31 +2,36 @@ import os
 import shutil
 import uuid
 import json
+import bcrypt
+
 from datetime import datetime
 from typing import Generator, Optional
-from fastapi import FastAPI, Depends, HTTPException, Form, UploadFile, File, Header, Request, BackgroundTasks
+from fastapi import FastAPI, Depends, HTTPException, Form, UploadFile, File, Header, Request, BackgroundTasks, status
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
-import bcrypt
-from auth import get_current_user
-
-from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
-from security import creer_token_acces, verifier_mot_de_passe
+from passlib.context import CryptContext
+from pydantic import BaseModel
 
-# Importez vos modèles depuis votre fichier models.py
-from models import Base, Utilisateur, NoteDeFrais, Justificatif, StatutEnum
+# Vos modules locaux
+from auth import get_current_user
+from security import creer_token_acces, verifier_mot_de_passe
+from models import Base, Utilisateur, NoteDeFrais, Justificatif, StatutEnum, UserRegister 
 
 # Configuration SDK Gemini officiel
 from google import genai
 from google.genai import types
+from pydantic import BaseModel
 
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
+class PasswordReset(BaseModel):
+    password: str # Ou new_password selon ce que Flutter envoie
 
-from passlib.context import CryptContext
+class PasswordResetModel(BaseModel):
+    password: Optional[str] = None
+    mot_de_passe: Optional[str] = None
+
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # Définissez le dossier où seront stockés les justificatifs
@@ -229,12 +234,9 @@ async def get_notes_en_attente(db: Session = Depends(get_db)):
             justificatif_url = note.justificatifs[0].url_fichier if hasattr(note, 'justificatifs') and note.justificatifs else None
             
             employe_nom = "Employé"
-            
-            # On cherche l'objet utilisateur lié (via 'employe', 'utilisateur' ou 'user')
             user_obj = getattr(note, 'employe', None) or getattr(note, 'utilisateur', None) or getattr(note, 'user', None)
             
             if user_obj:
-                # 🛠️ Utilisation de 'nom_user' d'après votre structure de base de données
                 employe_nom = getattr(user_obj, 'nom_user', None) or getattr(user_obj, 'username', 'Employé')
             elif note.utilisateur_id:
                 employe_nom = f"Utilisateur #{note.utilisateur_id}"
@@ -251,7 +253,7 @@ async def get_notes_en_attente(db: Session = Depends(get_db)):
                 "date_soumission": str(note.date_soumission) if hasattr(note, 'date_soumission') and note.date_soumission else None,
                 "statut": val_statut,
                 "justificatif_url": justificatif_url,
-                "employe_nom": employe_nom, # Le nom correct (ex: LOTTO, Loge) va s'afficher
+                "employe_nom": employe_nom,
                 "user_id": note.utilisateur_id
             })
         return result
@@ -282,7 +284,6 @@ async def get_all_expenses(
             val_statut = note.statut.value if hasattr(note.statut, "value") else note.statut
             justificatif_url = note.justificatifs[0].url_fichier if hasattr(note, 'justificatifs') and note.justificatifs else None
             
-            # 🔍 Récupération du nom de l'employé via nom_user
             employe_nom = "Employé"
             for rel_name in ['employe', 'utilisateur']:
                 if hasattr(note, rel_name) and getattr(note, rel_name):
@@ -321,13 +322,11 @@ async def update_note_status(
         if not note:
             raise HTTPException(status_code=404, detail="Note de frais introuvable")
             
-        # Nettoyage de la valeur reçue (minuscules, suppression des espaces)
         statut_clean = statut.strip().lower()
         
         try:
             note.statut = StatutEnum(statut_clean)
         except ValueError:
-            # Fallback : si l'enum utilise des accents ou un autre format
             note.statut = statut_clean  
 
         db.commit()
@@ -348,7 +347,6 @@ async def get_mes_notes(
     current_user = Depends(get_current_user)
 ):
     try:
-        # Sécurisation de l'ID utilisateur (si current_user est un objet ou un int)
         user_id = current_user.id if hasattr(current_user, 'id') else current_user
         notes = db.query(NoteDeFrais).filter(NoteDeFrais.utilisateur_id == user_id).all()
         
@@ -571,11 +569,9 @@ async def supprimer_note_comptable(
         if not note:
             raise HTTPException(status_code=404, detail="Note de frais introuvable.")
         
-        # Supprimer le fichier physique associé du serveur s'il existe
         if hasattr(note, 'justificatifs') and note.justificatifs:
             for justificatif in note.justificatifs:
                 if justificatif.url_fichier:
-                    # Extraire le nom du fichier depuis l'URL (ex: /uploads/abc.png -> abc.png)
                     filename = justificatif.url_fichier.split("/")[-1]
                     file_path = os.path.join(UPLOAD_DIR, filename)
                     if os.path.exists(file_path):
@@ -596,3 +592,109 @@ async def supprimer_note_comptable(
         raise HTTPException(status_code=500, detail=str(e))
     
 
+@app.post("/register")
+async def register(
+    request: Request,
+    db: Session = Depends(get_db)
+):
+    try:
+        data = await request.json()
+    except Exception:
+        raise HTTPException(status_code=422, detail="Format JSON invalide")
+
+    email = data.get("email")
+    password = data.get("password") or data.get("mot_de_passe")
+    nom_user = data.get("nom_user") or data.get("nom")
+    role = data.get("role", "employe")
+
+    if not email or not password or not nom_user:
+        raise HTTPException(
+            status_code=422, 
+            detail=f"Champs manquants. Reçu: {data}"
+        )
+
+    user_existant = db.query(Utilisateur).filter(Utilisateur.email == email).first()
+    if user_existant:
+        raise HTTPException(status_code=400, detail="Cet email est déjà utilisé")
+
+    # --- CORRECTION DU HACHAGE ICI ---
+    # Convertir le mot de passe en bytes, le tronquer à 72 octets max pour éviter l'erreur, et le hasher
+    password_bytes = password.encode('utf-8')[:72]
+    hashed_password = bcrypt.hashpw(password_bytes, bcrypt.gensalt()).decode('utf-8')
+    # ---------------------------------
+
+    nouveau_user = Utilisateur(
+        email=email,
+        mot_de_passe=hashed_password,
+        nom_user=nom_user,
+        role=role
+    )
+
+    db.add(nouveau_user)
+    db.commit()
+    db.refresh(nouveau_user)
+
+    return {"message": "Utilisateur créé avec succès", "user_id": nouveau_user.id}
+
+@app.get("/users")
+async def get_all_users(db: Session = Depends(get_db)):
+    # Récupère tous les utilisateurs de la base de données
+    utilisateurs = db.query(Utilisateur).all()
+    
+    # Retourne la liste formatée sous forme de JSON pour l'application Flutter
+    return [
+        {
+            "id": u.id,
+            "nom_user": u.nom_user,
+            "email": u.email,
+            "role": u.role
+        }
+        for u in utilisateurs
+    ]  
+
+@app.put("/admin/users/{user_id}/password")
+async def reset_user_password(
+    user_id: int, 
+    request: Request, # On récupère la requête brute
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    # 1. Vérification des rôles
+    current_user_id = current_user.id if hasattr(current_user, 'id') else current_user
+    admin_user = db.query(Utilisateur).filter(Utilisateur.id == current_user_id).first()
+    if not admin_user or admin_user.role not in ['comptable', 'manager', 'admin']:
+        raise HTTPException(status_code=403, detail="Accès non autorisé")
+
+    # 2. Lecture sécurisée du corps JSON brut envoyé par Flutter
+    try:
+        data = await request.json()
+    except Exception:
+        raise HTTPException(status_code=422, detail="Le corps de la requête doit être un JSON valide.")
+
+    # 3. Récupération du mot de passe peu importe le nom de la clé utilisée par Flutter
+    plain_password = (
+        data.get("password") or 
+        data.get("mot_de_passe") or 
+        data.get("new_password") or 
+        data.get("nouveau_mot_de_passe")
+    )
+
+    if not plain_password:
+        raise HTTPException(
+            status_code=422, 
+            detail=f"Clé 'password' ou 'mot_de_passe' introuvable dans le JSON reçu. Reçu : {data}"
+        )
+
+    # 4. Recherche de l'utilisateur cible
+    user = db.query(Utilisateur).filter(Utilisateur.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Utilisateur non trouvé")
+    
+    # 5. Hachage et mise à jour
+    password_bytes = plain_password.encode('utf-8')[:72]
+    hashed_password = bcrypt.hashpw(password_bytes, bcrypt.gensalt()).decode('utf-8')
+    
+    user.mot_de_passe = hashed_password
+    db.commit()
+    
+    return {"success": True, "message": "Mot de passe mis à jour avec succès"}

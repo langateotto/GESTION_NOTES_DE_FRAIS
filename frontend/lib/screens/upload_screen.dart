@@ -6,6 +6,7 @@ import '../services/api_service.dart';
 import '../services/auth_service.dart';
 import 'login_screen.dart';
 
+
 class UploadScreen extends StatefulWidget {
   final ApiService apiService;
 
@@ -59,17 +60,17 @@ class _UploadScreenState extends State<UploadScreen> {
     });
   }
 
-  Future<void> _pickFile() async {
+Future<void> _pickFile() async {
   try {
-    // Dans la v12, pickFiles() retourne directement une List<PlatformFile>
-    List<PlatformFile> files = await FilePicker.pickFiles(
+    // Utilisation directe de pickFile() pour un fichier unique
+    PlatformFile? result = await FilePicker.pickFile(
       type: FileType.custom,
       allowedExtensions: ['pdf', 'jpg', 'jpeg', 'png'],
     );
 
-    if (files.isNotEmpty) {
+    if (result != null) {
       setState(() {
-        _selectedFile = files.first;
+        _selectedFile = result;
       });
       await _uploadAndAnalyze();
     }
@@ -101,11 +102,15 @@ class _UploadScreenState extends State<UploadScreen> {
       final data = result["note_creee"] ?? result["data"] ?? result;
 
       setState(() {
-        var montantTtcVal = data["montant_ttc"] ?? data["montant"] ?? data["total"] ?? 0.0;
-        _montantTtcController.text = montantTtcVal.toString();
+        var montantTtcVal = data["montant_ttc"] ?? data["montant"] ?? data["total"];
+        if (montantTtcVal != null && montantTtcVal != 0 && montantTtcVal != 0.0) {
+          _montantTtcController.text = montantTtcVal.toString();
+        }
 
-        var montantTvaVal = data["montant_tva"] ?? data["tva"] ?? 0.0;
-        _montantTvaController.text = montantTvaVal.toString();
+        var montantTvaVal = data["montant_tva"] ?? data["tva"];
+        if (montantTvaVal != null && montantTvaVal != 0 && montantTvaVal != 0.0) {
+          _montantTvaController.text = montantTvaVal.toString();
+        }
 
         _titreController.text = data["titre"] ?? data["description"] ?? "Note de frais - ${_selectedFile?.name ?? ''}";
         _dateController.text = data["date_depense"] ?? data["date"] ?? "";
@@ -115,7 +120,7 @@ class _UploadScreenState extends State<UploadScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text("⏳ Upload reçu. L'IA analyse le montant en arrière-plan..."),
+            content: Text("⏳ Upload reçu. Vérifiez ou ajustez les montants si besoin."),
             backgroundColor: Colors.orange,
             duration: Duration(seconds: 4),
           ),
@@ -147,8 +152,8 @@ class _UploadScreenState extends State<UploadScreen> {
     try {
       bool success = await widget.apiService.createExpense(
         titre: _titreController.text,
-        montantTtc: double.tryParse(_montantTtcController.text) ?? 0.0,
-        montantTva: double.tryParse(_montantTvaController.text) ?? 0.0,
+        montantTtc: double.tryParse(_montantTtcController.text.replaceAll(',', '.')) ?? 0.0,
+        montantTva: double.tryParse(_montantTvaController.text.replaceAll(',', '.')) ?? 0.0,
         dateDepense: _dateController.text,
         justificatifUrl: _justificatifUrl,
       );
@@ -235,30 +240,30 @@ class _UploadScreenState extends State<UploadScreen> {
                       border: Border.all(color: Colors.grey.shade400),
                     ),
                     child: _selectedFile != null
-                          ? ClipRRect(
-                              borderRadius: BorderRadius.circular(12),
-                              child: isPdfFile
-                                  ? Column(
-                                      mainAxisAlignment: MainAxisAlignment.center,
-                                      children: [
-                                        const Icon(Icons.picture_as_pdf, size: 50, color: Colors.red),
-                                        const SizedBox(height: 8),
-                                        Text(_selectedFile!.name, textAlign: TextAlign.center),
-                                      ],
-                                    )
-                                  : (kIsWeb
-                                      ? FutureBuilder<Uint8List>(
-                                          future: _selectedFile!.readAsBytes(),
-                                          builder: (context, snapshot) {
-                                            if (snapshot.connectionState == ConnectionState.done &&
-                                                snapshot.hasData) {
-                                              return Image.memory(snapshot.data!, fit: BoxFit.cover);
-                                            }
-                                            return const Center(child: CircularProgressIndicator());
-                                          },
-                                        )
-                                      : Image.file(File(_selectedFile!.path!), fit: BoxFit.cover)),
-                            )
+                        ? ClipRRect(
+                            borderRadius: BorderRadius.circular(12),
+                            child: isPdfFile
+                                ? Column(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      const Icon(Icons.picture_as_pdf, size: 50, color: Colors.red),
+                                      const SizedBox(height: 8),
+                                      Text(_selectedFile!.name, textAlign: TextAlign.center),
+                                    ],
+                                  )
+                                : (kIsWeb
+                                    ? FutureBuilder<Uint8List>(
+                                        future: _selectedFile!.readAsBytes(),
+                                        builder: (context, snapshot) {
+                                          if (snapshot.connectionState == ConnectionState.done &&
+                                              snapshot.hasData) {
+                                            return Image.memory(snapshot.data!, fit: BoxFit.cover);
+                                          }
+                                          return const Center(child: CircularProgressIndicator());
+                                        },
+                                      )
+                                    : Image.file(File(_selectedFile!.path!), fit: BoxFit.cover)),
+                          )
                         : const Center(
                             child: Text("Aucun justificatif sélectionné", style: TextStyle(color: Colors.grey)),
                           ),
@@ -280,13 +285,13 @@ class _UploadScreenState extends State<UploadScreen> {
                     const SizedBox(height: 12),
                     TextField(
                       controller: _montantTtcController,
-                      keyboardType: TextInputType.number,
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
                       decoration: const InputDecoration(labelText: "Montant TTC (€)", border: OutlineInputBorder()),
                     ),
                     const SizedBox(height: 12),
                     TextField(
                       controller: _montantTvaController,
-                      keyboardType: TextInputType.number,
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
                       decoration: const InputDecoration(labelText: "Montant TVA (€)", border: OutlineInputBorder()),
                     ),
                     const SizedBox(height: 12),
@@ -365,7 +370,6 @@ class _UploadScreenState extends State<UploadScreen> {
                                           ),
                                           backgroundColor: statusColor,
                                         ),
-                                        // Afficher le bouton d'annulation uniquement si la note est en attente
                                         if (status == 'en_attente') ...[
                                           const SizedBox(width: 4),
                                           IconButton(
@@ -391,7 +395,6 @@ class _UploadScreenState extends State<UploadScreen> {
                                               );
 
                                               if (confirm == true) {
-                                                // CORRECTION : Appel de cancelExpense au lieu de deleteExpense
                                                 bool success = await widget.apiService.cancelExpense(note['id']);
                                                 if (success) {
                                                   if (context.mounted) {

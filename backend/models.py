@@ -3,6 +3,7 @@ from datetime import datetime
 from sqlalchemy import Column, Integer, String, ForeignKey, Numeric, Date, DateTime, Enum, TEXT
 from sqlalchemy.orm import relationship
 from database import Base
+from pydantic import BaseModel
 
 # ==========================================
 # ENUMS (Pour limiter les choix dans la BD)
@@ -18,6 +19,7 @@ class StatutEnum(str, enum.Enum):
     en_attente = "en_attente"
     valide = "valide"
     rejete = "rejete"
+    annule = "annule"  # Statut d'annulation par l'employé inclus ici
 
 
 # ==========================================
@@ -51,12 +53,6 @@ class Mission(Base):
     employe = relationship("Utilisateur", back_populates="missions")
     notes_de_frais = relationship("NoteDeFrais", back_populates="mission")
 
-
-class StatutEnum(enum.Enum):
-    en_attente = "en_attente"
-    valide = "valide"
-    rejete = "rejete"
-    annule = "annule"  # Ajout du statut d'annulation par l'employé
 
 class NoteDeFrais(Base):
     __tablename__ = "notes_de_frais"
@@ -92,5 +88,10 @@ class Justificatif(Base):
     url_fichier = Column(String(255), nullable=False)
     note_de_frais_id = Column(Integer, ForeignKey("notes_de_frais.id", ondelete="CASCADE"), nullable=False)
 
-    # CORRECTION ICI : utilisez "justificatifs" (au pluriel) pour correspondre à NoteDeFrais
     note_de_frais = relationship("NoteDeFrais", back_populates="justificatifs")
+
+class UserRegister(BaseModel):
+    email: str
+    password: str
+    nom_user: str
+    role: str = "employe"
