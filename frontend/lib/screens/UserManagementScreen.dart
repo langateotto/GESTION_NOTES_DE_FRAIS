@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../services/api_service.dart';
 import '../services/auth_service.dart';
 import 'login_screen.dart';
+import 'base_screen.dart';
 
 class UserManagementScreen extends StatelessWidget {
   final ApiService apiService;
@@ -10,40 +11,62 @@ class UserManagementScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text("Gestion des Utilisateurs"),
-        actions: [
-          // Bouton de déconnexion dans l'AppBar
-          IconButton(
-            icon: const Icon(Icons.logout, color: Colors.red),
-            tooltip: "Se déconnecter",
-            onPressed: () => _confirmLogout(context),
-          ),
-        ],
-      ),
-      body: FutureBuilder<List<dynamic>>(
+    // On utilise BaseScreen pour uniformiser le fond et le style de la carte
+    return BaseScreen(
+      title: "Gestion des Utilisateurs",
+      actions: [
+        // Bouton de déconnexion dans l'AppBar du BaseScreen
+        IconButton(
+          icon: const Icon(Icons.logout, color: Colors.red),
+          tooltip: "Se déconnecter",
+          onPressed: () => _confirmLogout(context),
+        ),
+      ],
+      child: FutureBuilder<List<dynamic>>(
         future: apiService.getAllUsers(),
         builder: (context, snapshot) {
           if (!snapshot.hasData) {
-            return const Center(child: CircularProgressIndicator());
+            return const Center(
+              child: Padding(
+                padding: EdgeInsets.all(32.0),
+                child: CircularProgressIndicator(),
+              ),
+            );
           }
           
           final users = snapshot.data!;
           if (users.isEmpty) {
-            return const Center(child: Text("Aucun utilisateur trouvé."));
+            return const Padding(
+              padding: EdgeInsets.all(32.0),
+              child: Center(child: Text("Aucun utilisateur trouvé.")),
+            );
           }
 
+          // On utilise ListView.builder avec shrinkWrap et physics pour l'intégrer proprement dans la carte du BaseScreen
           return ListView.builder(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
             itemCount: users.length,
             itemBuilder: (context, index) {
               final user = users[index];
-              return ListTile(
-                title: Text(user['nom_user'] ?? 'Sans nom'),
-                subtitle: Text("Rôle : ${user['role'] ?? 'employe'}"),
-                trailing: IconButton(
-                  icon: const Icon(Icons.lock_reset, color: Colors.blue),
-                  onPressed: () => _showResetPasswordDialog(context, user),
+              return Card(
+                elevation: 1,
+                margin: const EdgeInsets.symmetric(vertical: 6),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  side: BorderSide(color: Colors.grey.shade200),
+                ),
+                child: ListTile(
+                  title: Text(
+                    user['nom_user'] ?? 'Sans nom',
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  subtitle: Text("Rôle : ${user['role'] ?? 'employe'}"),
+                  trailing: IconButton(
+                    icon: const Icon(Icons.lock_reset, color: Colors.blue),
+                    tooltip: "Réinitialiser le mot de passe",
+                    onPressed: () => _showResetPasswordDialog(context, user),
+                  ),
                 ),
               );
             },
@@ -68,12 +91,9 @@ class UserManagementScreen extends StatelessWidget {
           ElevatedButton(
             style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
             onPressed: () async {
-              Navigator.pop(ctx); // Fermer la modale
-              
-              // 1. Supprimer le token / données de session
+              Navigator.pop(ctx);
               await AuthService.logout(); 
 
-              // 2. Rediriger directement vers l'écran de connexion sans passer par les routes nommées
               if (context.mounted) {
                 Navigator.pushAndRemoveUntil(
                   context,

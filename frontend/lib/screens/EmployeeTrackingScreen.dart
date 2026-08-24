@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../../services/api_service.dart';
+import 'base_screen.dart';
 
 class EmployeeTrackingScreen extends StatefulWidget {
   final ApiService apiService;
@@ -57,7 +58,6 @@ class _EmployeeTrackingScreenState extends State<EmployeeTrackingScreen> {
     }
   }
 
-  // Suppression définitive (Hard Delete) par le comptable
   Future<void> _deleteExpense(int noteId) async {
     bool confirm = await showDialog(
       context: context,
@@ -104,7 +104,6 @@ class _EmployeeTrackingScreenState extends State<EmployeeTrackingScreen> {
     }
   }
 
-  // Cherche explicitement 'nom_user' (basé sur votre table SQL)
   String _getEmployeeName(Map<String, dynamic> expense) {
     if (expense['nom_user'] != null) return expense['nom_user'].toString();
     if (expense['employe_nom'] != null) return expense['employe_nom'].toString();
@@ -155,7 +154,6 @@ class _EmployeeTrackingScreenState extends State<EmployeeTrackingScreen> {
           ],
         ),
         actions: [
-          // Bouton pour supprimer définitivement de la BDD
           TextButton(
             onPressed: () {
               Navigator.pop(context);
@@ -163,12 +161,11 @@ class _EmployeeTrackingScreenState extends State<EmployeeTrackingScreen> {
             },
             child: const Text("Supprimer", style: TextStyle(color: Colors.red)),
           ),
-          const Spacer(), // Pousse les autres boutons vers la droite
+          const Spacer(),
           TextButton(
             onPressed: () => Navigator.pop(context),
             child: const Text("Fermer"),
           ),
-          // N'afficher Rejeter / Valider que si la note n'est pas déjà annulée
           if (currentStatus != 'annule') ...[
             ElevatedButton(
               style: ElevatedButton.styleFrom(backgroundColor: Colors.red, foregroundColor: Colors.white),
@@ -201,131 +198,138 @@ class _EmployeeTrackingScreenState extends State<EmployeeTrackingScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text("Suivi des notes de frais par employé"),
-        backgroundColor: Colors.blueGrey[900],
-        foregroundColor: Colors.white,
-      ),
-      body: Padding(
-        padding: const EdgeInsets.all(24.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              "Historique global et suivi",
-              style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+    // Utilisation de BaseScreen pour uniformiser l'écran
+    return BaseScreen(
+      title: "Suivi des notes de frais",
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Text(
+            "Historique global et suivi",
+            style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.black87),
+          ),
+          const SizedBox(height: 16),
+          
+          // Filtres sous forme de ChoiceChips
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: [
+                ChoiceChip(
+                  label: const Text("Toutes"),
+                  selected: _selectedStatutFilter == null,
+                  onSelected: (selected) {
+                    setState(() => _selectedStatutFilter = null);
+                    _loadAllExpenses();
+                  },
+                ),
+                const SizedBox(width: 8),
+                ChoiceChip(
+                  label: const Text("En attente"),
+                  selected: _selectedStatutFilter == 'en_attente',
+                  onSelected: (selected) {
+                    setState(() => _selectedStatutFilter = 'en_attente');
+                    _loadAllExpenses();
+                  },
+                ),
+                const SizedBox(width: 8),
+                ChoiceChip(
+                  label: const Text("Validées"),
+                  selected: _selectedStatutFilter == 'valide',
+                  onSelected: (selected) {
+                    setState(() => _selectedStatutFilter = 'valide');
+                    _loadAllExpenses();
+                  },
+                ),
+                const SizedBox(width: 8),
+                ChoiceChip(
+                  label: const Text("Rejetées"),
+                  selected: _selectedStatutFilter == 'rejete',
+                  onSelected: (selected) {
+                    setState(() => _selectedStatutFilter = 'rejete');
+                    _loadAllExpenses();
+                  },
+                ),
+                const SizedBox(width: 8),
+                ChoiceChip(
+                  label: const Text("Annulées"),
+                  selected: _selectedStatutFilter == 'annule',
+                  selectedColor: Colors.grey[300],
+                  onSelected: (selected) {
+                    setState(() => _selectedStatutFilter = 'annule');
+                    _loadAllExpenses();
+                  },
+                ),
+              ],
             ),
-            const SizedBox(height: 16),
-            SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: Row(
-                children: [
-                  ChoiceChip(
-                    label: const Text("Toutes"),
-                    selected: _selectedStatutFilter == null,
-                    onSelected: (selected) {
-                      setState(() => _selectedStatutFilter = null);
-                      _loadAllExpenses();
-                    },
-                  ),
-                  const SizedBox(width: 8),
-                  ChoiceChip(
-                    label: const Text("En attente"),
-                    selected: _selectedStatutFilter == 'en_attente',
-                    onSelected: (selected) {
-                      setState(() => _selectedStatutFilter = 'en_attente');
-                      _loadAllExpenses();
-                    },
-                  ),
-                  const SizedBox(width: 8),
-                  ChoiceChip(
-                    label: const Text("Validées"),
-                    selected: _selectedStatutFilter == 'valide',
-                    onSelected: (selected) {
-                      setState(() => _selectedStatutFilter = 'valide');
-                      _loadAllExpenses();
-                    },
-                  ),
-                  const SizedBox(width: 8),
-                  ChoiceChip(
-                    label: const Text("Rejetées"),
-                    selected: _selectedStatutFilter == 'rejete',
-                    onSelected: (selected) {
-                      setState(() => _selectedStatutFilter = 'rejete');
-                      _loadAllExpenses();
-                    },
-                  ),
-                  const SizedBox(width: 8),
-                  // Ajout du filtre pour les notes annulées
-                  ChoiceChip(
-                    label: const Text("Annulées"),
-                    selected: _selectedStatutFilter == 'annule',
-                    selectedColor: Colors.grey[300],
-                    onSelected: (selected) {
-                      setState(() => _selectedStatutFilter = 'annule');
-                      _loadAllExpenses();
-                    },
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 20),
-            Expanded(
-              child: _isLoading
-                  ? const Center(child: CircularProgressIndicator())
-                  : _employeesExpenses.isEmpty
-                      ? const Center(child: Text("Aucune note de frais trouvée."))
-                      : ListView.builder(
-                          itemCount: _employeesExpenses.length,
-                          itemBuilder: (context, index) {
-                            final expense = _employeesExpenses[index];
-                            final status = expense['statut'] ?? 'en_attente';
-                            final employeNom = _getEmployeeName(expense);
-                            final titreFrais = expense['titre'] ?? expense['description'] ?? 'Frais';
-                            
-                            // Détermination de la couleur selon le statut
-                            Color statusColor = Colors.orange;
-                            if (status == 'valide') statusColor = Colors.green;
-                            if (status == 'rejete') statusColor = Colors.red;
-                            if (status == 'annule') statusColor = Colors.grey;
+          ),
+          const SizedBox(height: 20),
 
-                            return Card(
-                              margin: const EdgeInsets.symmetric(vertical: 8),
-                              child: ListTile(
-                                onTap: () => _showActionDialog(expense, status),
-                                leading: CircleAvatar(
-                                  backgroundColor: statusColor.withValues(alpha: 0.2),
-                                  child: Icon(
-                                    status == 'annule' ? Icons.block : Icons.person, 
-                                    color: statusColor
-                                  ),
-                                ),
-                                title: Text(
-                                  "$employeNom - $titreFrais",
-                                  style: TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    // Barrer le texte si la note est annulée
-                                    decoration: status == 'annule' ? TextDecoration.lineThrough : null,
-                                  ),
-                                ),
-                                subtitle: Text(
-                                  "Montant : ${expense['montant_ttc']} € | Date : ${expense['date_depense'] ?? 'N/A'}",
-                                ),
-                                trailing: Chip(
-                                  label: Text(
-                                    status.toUpperCase(),
-                                    style: const TextStyle(color: Colors.white, fontSize: 12),
-                                  ),
-                                  backgroundColor: statusColor,
-                                ),
+          // Liste des notes de frais intégrée dans la carte globale
+          _isLoading
+              ? const Padding(
+                  padding: EdgeInsets.all(32.0),
+                  child: Center(child: CircularProgressIndicator()),
+                )
+              : _employeesExpenses.isEmpty
+                  ? const Padding(
+                      padding: EdgeInsets.all(32.0),
+                      child: Center(child: Text("Aucune note de frais trouvée.")),
+                    )
+                  : ListView.builder(
+                      shrinkWrap: true,
+                      physics: const NeverScrollableScrollPhysics(),
+                      itemCount: _employeesExpenses.length,
+                      itemBuilder: (context, index) {
+                        final expense = _employeesExpenses[index];
+                        final status = expense['statut'] ?? 'en_attente';
+                        final employeNom = _getEmployeeName(expense);
+                        final titreFrais = expense['titre'] ?? expense['description'] ?? 'Frais';
+                        
+                        Color statusColor = Colors.orange;
+                        if (status == 'valide') statusColor = Colors.green;
+                        if (status == 'rejete') statusColor = Colors.red;
+                        if (status == 'annule') statusColor = Colors.grey;
+
+                        return Card(
+                          elevation: 1,
+                          margin: const EdgeInsets.symmetric(vertical: 6),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            side: BorderSide(color: Colors.grey.shade200),
+                          ),
+                          child: ListTile(
+                            onTap: () => _showActionDialog(expense, status),
+                            leading: CircleAvatar(
+                              backgroundColor: statusColor.withValues(alpha: 0.2),
+                              child: Icon(
+                                status == 'annule' ? Icons.block : Icons.person, 
+                                color: statusColor
                               ),
-                            );
-                          },
-                        ),
-            ),
-          ],
-        ),
+                            ),
+                            title: Text(
+                              "$employeNom - $titreFrais",
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                decoration: status == 'annule' ? TextDecoration.lineThrough : null,
+                              ),
+                            ),
+                            subtitle: Text(
+                              "Montant : ${expense['montant_ttc']} € | Date : ${expense['date_depense'] ?? 'N/A'}",
+                            ),
+                            trailing: Chip(
+                              label: Text(
+                                status.toUpperCase(),
+                                style: const TextStyle(color: Colors.white, fontSize: 10),
+                              ),
+                              backgroundColor: statusColor,
+                              padding: EdgeInsets.zero,
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+        ],
       ),
     );
   }
