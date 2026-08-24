@@ -218,10 +218,14 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = 
         "role": user.role
     })
 
+    # On sécurise la récupération pour éviter une erreur si la colonne est NULL en base
+    must_change = getattr(user, "must_change_password", False) or False
+
     return {
         "access_token": access_token,
         "token_type": "bearer",
-        "role": user.role
+        "role": user.role,
+        "must_change_password": must_change
     }
 
 @app.get("/notes/en-attente")
@@ -695,6 +699,41 @@ async def reset_user_password(
     hashed_password = bcrypt.hashpw(password_bytes, bcrypt.gensalt()).decode('utf-8')
     
     user.mot_de_passe = hashed_password
+    user.must_change_password = True  # <-- Ajouté ici pour forcer le changement à la prochaine connexion
     db.commit()
     
     return {"success": True, "message": "Mot de passe mis à jour avec succès"}
+
+@app.put("/users/change-password")
+async def change_password(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    # 1. Récupérer l'ID de l'utilisateur connecté
+    current_user_id = current_user.id if hasattr(current_user, 'id') else current_user
+    user = db.query(Utilisateur).filter(Utilisateur.id == current_user_id).first()
+    
+    if not user:
+        raise HTTPException(status_code=404, detail="Utilisateur non trouvé")
+
+    # 2. Lire le corps JSON
+    try:
+        data = await request.json()
+    except Exception:
+        raise HTTPException(status_code=422, detail="Format JSON invalide.")
+
+    new_password = data.get("password") or data.get("mot_de_passe") or data.get("nouveau_mot_de_passe")
+    
+    if not new_password:
+        raise HTTPException(status_code=422, detail="Le nouveau mot de passe est requis.")
+
+    # 3. Hacher et enregistrer, puis désactiver le flag must_change_password
+    password_bytes = new_password.encode('utf-8')[:72]
+    hashed_password = bcrypt.hashpw(password_bytes, bcrypt.gensalt()).decode('utf-8')
+    
+    user.mot_de_passe = hashed_password
+    user.must_change_password = False  # <-- On désactive l'obligation
+    db.commit()
+
+    return {"success": True, "message": "Mot de passe modifié avec succès."}

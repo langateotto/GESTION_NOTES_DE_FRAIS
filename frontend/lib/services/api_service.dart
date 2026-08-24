@@ -27,18 +27,25 @@ class ApiService {
         String token = data['access_token'];
         
         String role = data['role'] ?? 'employe'; 
-        print("👤 [LOGIN] Rôle détecté : $role");
+        // Récupération de la valeur must_change_password (false par défaut si absente)
+        bool mustChangePassword = data['must_change_password'] ?? false;
+        
+        print("👤 [LOGIN] Rôle détecté : $role | Doit changer le mot de passe : $mustChangePassword");
 
         await AuthService.saveUserSession(token, role);
 
-        return {"success": true, "role": role};
+        return {
+          "success": true, 
+          "role": role,
+          "must_change_password": mustChangePassword,
+        };
       } else {
         print("❌ [LOGIN] Échec de la connexion.");
-        return {"success": false, "role": null};
+        return {"success": false, "role": null, "must_change_password": false};
       }
     } catch (e) {
       print("🔥 [LOGIN] Erreur de connexion : $e");
-      return {"success": false, "role": null};
+      return {"success": false, "role": null, "must_change_password": false};
     }
   }
 
@@ -260,9 +267,7 @@ class ApiService {
     }
   }
 
-  // --- NOUVELLES FONCTIONS INTÉGRÉES À LA CLASSE ---
-
- Future<bool> resetUserPassword(int userId, String newPassword) async {
+  Future<bool> resetUserPassword(int userId, String newPassword) async {
     try {
       final token = await AuthService.getToken();
       final response = await http.put(
@@ -271,7 +276,6 @@ class ApiService {
           "Authorization": "Bearer ${token ?? ''}",
           "Content-Type": "application/json"
         },
-        // Changez "new_password" par "password" si c'est ce que votre route Python attend
         body: jsonEncode({"password": newPassword}),
       );
       return response.statusCode == 200;
@@ -303,32 +307,55 @@ class ApiService {
     }
   }
 
- Future<bool> resetPassword(int userId, String newPassword) async {
-  final url = Uri.parse('$baseUrl/admin/users/$userId/password');
-  
-  try {
-    final response = await http.put(
-      url,
-      headers: {"Content-Type": "application/json"},
-      body: jsonEncode({"password": newPassword}),
-    );
+  Future<bool> resetPassword(int userId, String newPassword) async {
+    final url = Uri.parse('$baseUrl/admin/users/$userId/password');
     
-    print("Code HTTP : ${response.statusCode}");
-    print("Réponse du serveur : ${response.body}");
-    
-    if (response.statusCode == 200) {
-      return true;
-    } else {
-      throw Exception("Erreur serveur : ${response.statusCode} - ${response.body}");
+    try {
+      final response = await http.put(
+        url,
+        headers: {"Content-Type": "application/json"},
+        body: jsonEncode({"password": newPassword}),
+      );
+      
+      print("Code HTTP : ${response.statusCode}");
+      print("Réponse du serveur : ${response.body}");
+      
+      if (response.statusCode == 200) {
+        return true;
+      } else {
+        throw Exception("Erreur serveur : ${response.statusCode} - ${response.body}");
+      }
+    } catch (e) {
+      print("Exception attrapée : $e");
+      rethrow;
     }
-  } catch (e) {
-    print("Exception attrapée : $e");
-    rethrow;
-  }
   }
 
   Future<void> logout() async {
-  final prefs = await SharedPreferences.getInstance();
-  await prefs.remove('access_token'); // Adaptez la clé selon ce que vous utilisez pour stocker votre token
-}
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('access_token');
+  }
+
+  Future<bool> changePassword(String newPassword) async {
+    try {
+      final token = await AuthService.getToken();
+      final response = await http.put(
+        Uri.parse('$baseUrl/users/change-password'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $token',
+        },
+        body: jsonEncode({'password': newPassword}),
+      );
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        return data['success'] == true;
+      }
+      return false;
+    } catch (e) {
+      print("Erreur changePassword: $e");
+      return false;
+    }
+  }
 }

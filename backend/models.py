@@ -4,6 +4,7 @@ from sqlalchemy import Column, Integer, String, ForeignKey, Numeric, Date, DateT
 from sqlalchemy.orm import relationship
 from database import Base
 from pydantic import BaseModel
+from sqlalchemy import Column, Integer, String, Enum, Boolean, ForeignKey # <--- Ajoutez "Boolean" ici
 
 # ==========================================
 # ENUMS (Pour limiter les choix dans la BD)
@@ -34,6 +35,7 @@ class Utilisateur(Base):
     email = Column(String(100), unique=True, index=True, nullable=False)
     mot_de_passe = Column(String(255), nullable=False)
     role = Column(Enum(RoleEnum), default=RoleEnum.employe, nullable=False)
+    must_change_password = Column(Boolean, default=False, nullable=False, server_default="0")
 
     # Relations
     missions = relationship("Mission", back_populates="employe")

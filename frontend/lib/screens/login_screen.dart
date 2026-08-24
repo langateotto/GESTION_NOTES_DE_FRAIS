@@ -4,6 +4,7 @@ import 'upload_screen.dart';
 import 'register_screen.dart';
 import 'accountant/accountant_dashboard_screen.dart';
 import 'UserManagementScreen.dart'; 
+import 'force_change_password_screen.dart'; // Import du nouvel écran
 
 class LoginScreen extends StatefulWidget {
   final ApiService apiService;
@@ -41,6 +42,8 @@ class _LoginScreenState extends State<LoginScreen> {
     final result = await widget.apiService.login(username, password);
     bool success = result["success"];
     String? role = result["role"];
+    // Récupération de l'obligation de changer le mot de passe
+    bool mustChangePassword = result["must_change_password"] ?? false;
 
     if (mounted) {
       setState(() {
@@ -48,6 +51,17 @@ class _LoginScreenState extends State<LoginScreen> {
       });
 
       if (success) {
+        // VÉRIFICATION PRIORITAIRE : Doit-il changer son mot de passe ?
+        if (mustChangePassword) {
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(
+              builder: (context) => ForceChangePasswordScreen(apiService: widget.apiService),
+            ),
+          );
+          return;
+        }
+
         // Redirection conditionnelle selon le rôle renvoyé par le backend
         if (role == "comptable") {
           Navigator.pushReplacement(
@@ -230,13 +244,13 @@ class _LoginScreenState extends State<LoginScreen> {
                         const SizedBox(height: 20),
                         TextButton(
                           onPressed: () {
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (context) => RegisterScreen(apiService: widget.apiService),
-                            ),
-                          );
-                        },
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (context) => RegisterScreen(apiService: widget.apiService),
+                              ),
+                            );
+                          },
                           child: Text(
                             "Pas encore de compte ? S'inscrire",
                             style: TextStyle(
